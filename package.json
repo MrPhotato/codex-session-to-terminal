@@ -1,0 +1,29 @@
+{
+  "name": "codex-session-to-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Open a local Desktop Codex session in a separate synchronized terminal on Windows",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MrPhotato/codex-session-to-terminal.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:powershell": "pwsh -NoProfile -File Test-PowerShell.ps1"
+  },
+  "dependencies": {
+    "@openai/codex": "0.163.0-alpha.10.2",
+    "ws": "8.22.0"
+  },
+  "license": "MIT"
+}

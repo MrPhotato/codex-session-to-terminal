@@ -1,0 +1,101 @@
+# Codex Session to Terminal
+
+<img src="assets/icon.png" width="128" alt="Codex Session to Terminal icon" />
+
+在 Windows 上，把当前 ChatGPT 本地 Work / Codex 会话接到旁边的终端。桌面与 CLI 使用同一个后台、同一条会话，可以继续收发消息和观察任务进度。
+
+**Preview · Windows x64 · 非官方集成。** 本项目依赖 Desktop 的内部启动机制和实验性 App Server 接口，按具体版本验证兼容性。它不是独立聊天客户端，不包含官方 Desktop 或 CLI 程序。
+
+源码仓库：[MrPhotato/codex-session-to-terminal](https://github.com/MrPhotato/codex-session-to-terminal)。
+
+## 能做什么
+
+- 从日常 Desktop 的当前本地聊天，按 **Ctrl+Alt+L** 打开对应 CLI。
+- 打开后尝试将新终端带到前台；若用户已切到其他应用，则不抢回焦点。当前本机验证中，Windows 拒绝了后台监听器的激活和窗口前置请求，终端仍可能被 Desktop 挡住，需要手动切换。
+- 在桌面与终端继续同一条会话，不复制历史、不另建 Agent。
+- 为不同会话打开各自的终端窗口。
+- 关闭 CLI 只断开该终端连接，后台任务继续运行。
+
+当前实测覆盖本地 Work 会话的双向消息、会话定位、普通桌面工具调用和终端缩放。入口按本地会话识别，不按 Work / Codex 标签限制；单独的 Codex 本地任务尚未独立验收。云端聊天、远程主机和 SSH 任务不属于本版支持范围。交互审批和全部插件尚未逐项验证。
+
+## 安装前提
+
+| 组件 | 当前要求 |
+| --- | --- |
+| Windows | x64 |
+| ChatGPT Desktop / OpenAI.Codex 包 | `26.1013.3656.0`，已完成正常安装与登录 |
+| Desktop 内置 CLI 与独立 CLI | `0.163.0-alpha.10.2` |
+| PowerShell | 7.4 或更新版本 |
+| Node.js / npm | Node.js 22 或更新版本，附带 npm |
+| C# 编译器 | Windows .NET Framework 4 的 `csc.exe` |
+| Windows Terminal | 推荐；没有时使用 PowerShell 窗口 |
+
+版本检查会拒绝未验证的 Desktop。不要只改版本号来绕过检查；客户端升级后，应先用原入口正常使用，再重新验证连接兼容性。
+
+## 开始使用
+
+1. 将源码放到一个固定目录，打开该目录的终端。
+2. 安装锁定版本的依赖：
+
+   ```powershell
+   npm ci
+   ```
+
+3. 双击 `Prepare.cmd`，发现本机组件并生成私有连接配置和小型原生启动器。
+4. 完成当前任务并退出 ChatGPT，然后双击 `Enable-Normal-Desktop.cmd`。
+5. 在本地聊天中按 **Ctrl+Alt+L**。当前聊天会在新终端中打开。
+
+可为 `Enable-Normal-Desktop.cmd` 创建 Windows 快捷方式，并将图标设为 `assets/icon.ico`。`assets/icon.png` 用于项目页面；ICO 包含 16–256 像素的多个尺寸。
+
+本工具保留原账号和历史，不设置系统级环境变量。已在普通模式运行的后台不能直接热迁移；启动器不会自动关闭正在运行的 Desktop。
+
+本版面向默认 `%USERPROFILE%\.codex` 配置目录，自定义 `CODEX_HOME` 尚未适配。若 Windows 阻止下载的脚本，请先审阅源码，再按本机策略对信任的文件解除锁定；本项目不会自动更改脚本执行策略。
+
+## 日常入口
+
+| 文件 | 用途 |
+| --- | --- |
+| `Prepare.cmd` | 首次准备或重新验证版本后的配置更新 |
+| `Enable-Normal-Desktop.cmd` | 以共享连接方式打开日常 Desktop |
+| `Open-Current-Chat.cmd` | 复制当前本地聊天链接后，手动打开对应 CLI |
+| `Status.cmd` | 查看共享启动与快捷入口状态 |
+| `Stop-Shortcut.cmd` | 停止快捷入口监听，保留已有聊天和终端 |
+
+CLI 中输入 `/quit` 或关闭该终端即可断开连接。真正退出 Desktop 会结束其共享后台，连接它的 CLI 随之断开。
+
+要恢复原来的使用方式，完成任务、退出 Desktop，再从原来的官方入口打开。不要在任务运行期间删除私有目录或编译产物。
+
+## 本地数据与权限
+
+配置、连接凭证及编译产物存放于 `%LOCALAPPDATA%\SessionBridge`，仅当前用户和 SYSTEM 可访问。源码包不含账号、凭证或聊天记录。独立 CLI 由 npm 安装，保留其上游许可。
+
+后台仅监听回环地址并要求 Bearer 凭证。快捷入口监听器仅在目标 Desktop 窗口处于前台时处理新复制的本地聊天链接，不保存剪贴板内容。它只接受格式校验后的本地会话 ID。
+
+这不是额外的权限沙箱。连接后的 CLI 使用该会话已有的工具和权限。不要分享私有连接目录、访问令牌或含聊天内容的日志。
+
+## 实现组成
+
+- PowerShell：组件发现、配置、启动与快捷入口。
+- C#：原生命令转发、单实例保护和后台进程生命周期。
+- Node.js：Desktop 标准输入输出与鉴权 WebSocket 的连接。
+- Codex CLI：官方终端界面，由用户自行安装的依赖提供。
+
+源码目录不包含官方 EXE / DLL、`node_modules` 或本机测试记录。原生启动器在本机准备时编译。
+
+## 开发与验证
+
+```powershell
+npm ci
+npm test
+npm run test:powershell
+```
+
+公开版的验证覆盖协议模拟、参数转发、链接解析和启动环境保护，不会启动真实 Desktop、使用账号或发送模型请求。核心连接机制已在上述版本组合上运行；公开版的自动发现与安装流程仍需要其他电脑上的完整验证。
+
+直接启动打包应用可能与官方激活入口具有不同的 Windows 应用身份。任务栏图标、自动更新及其他系统集成仍需独立验证。一次本机运行观察到系统深色模式下窗口使用黑色图标，但尚未确认是否由本工具触发；本项目没有改写官方图标或安装包。终端通过同一后台中断任务会影响桌面中的该任务。
+
+协议参考：[OpenAI App Server](https://learn.chatgpt.com/docs/app-server)、[CLI 参数](https://learn.chatgpt.com/docs/cli/reference)。协议文档不代表官方支持本项目的 Desktop 挂接方式。
+
+## 许可
+
+项目源码与图标采用 [MIT License](LICENSE)。第三方依赖按各自许可使用，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。本项目未获得 OpenAI 官方背书。
