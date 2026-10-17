@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Terminal-Focus.ps1')
 
-# Synthetic window records only. Do not initialize the native helper, enumerate
-# actual windows, launch a process, or invoke any foreground/window APIs here.
+# Synthetic window records and injected callbacks only. Compiling the native
+# helper is safe; no test invokes any native window API or launches an app.
 function New-TestTerminalWindow {
     param(
         [long]$Handle,
@@ -92,4 +92,41 @@ foreach ($case in $cases) {
     }
 }
 
-"Terminal focus selection: $($cases.Count) pure tests passed. No native window APIs were called."
+Initialize-CodexTerminalFocus
+if (![CodexSharedSession.TerminalWindow].GetField('ProcessStartTicks')) {
+    throw 'Terminal snapshots must retain the process incarnation used for mutation guards.'
+}
+
+$raiseCases = @(
+    @{ Name = 'Invalid identity prevents every mutation'; Guard = 'TargetInvalid'; Promote = 'RaiseRequested'; Cleanup = 'Demoted'; Expected = 'TargetInvalid'; Calls = 'guard' }
+    @{ Name = 'Preserve a pre-existing topmost setting'; Guard = 'AlreadyTopmost'; Promote = 'RaiseRequested'; Cleanup = 'Demoted'; Expected = 'AlreadyTopmost'; Calls = 'guard' }
+    @{ Name = 'Promotion always precedes demotion'; Guard = 'Ready'; Promote = 'RaiseRequested'; Cleanup = 'Demoted'; Expected = 'RaiseRequested'; Calls = 'guard,promote,cleanup' }
+    @{ Name = 'User switch after promotion still cleans up'; Guard = 'Ready'; Promote = 'SourceWindowChanged'; Cleanup = 'Demoted'; Expected = 'SourceWindowChanged'; Calls = 'guard,promote,cleanup' }
+    @{ Name = 'Rejected promotion still attempts cleanup'; Guard = 'Ready'; Promote = 'PromotionApiRejected'; Cleanup = 'Demoted'; Expected = 'PromotionApiRejected'; Calls = 'guard,promote,cleanup' }
+    @{ Name = 'Unconfirmed cleanup cannot report success'; Guard = 'Ready'; Promote = 'RaiseRequested'; Cleanup = 'DemotionNotObserved'; Expected = 'RaiseRequested/DemotionNotObserved'; Calls = 'guard,promote,cleanup' }
+    @{ Name = 'Cleanup identity failure remains visible'; Guard = 'Ready'; Promote = 'TargetInvalid'; Cleanup = 'CleanupTargetInvalid'; Expected = 'TargetInvalid/CleanupTargetInvalid'; Calls = 'guard,promote,cleanup' }
+    @{ Name = 'Promotion exception still runs finally'; Guard = 'Ready'; Promote = 'throw'; Cleanup = 'Demoted'; Expected = 'PromotionError'; Calls = 'guard,promote,cleanup' }
+    @{ Name = 'Promotion exception preserves cleanup failure'; Guard = 'Ready'; Promote = 'throw'; Cleanup = 'DemotionNotObserved'; Expected = 'PromotionError/DemotionNotObserved'; Calls = 'guard,promote,cleanup' }
+    @{ Name = 'Cleanup exception cannot mask promotion status'; Guard = 'Ready'; Promote = 'RaiseRequested'; Cleanup = 'throw'; Expected = 'RaiseRequested/CleanupError'; Calls = 'guard,promote,cleanup' }
+    @{ Name = 'Both exceptions retain both failure labels'; Guard = 'Ready'; Promote = 'throw'; Cleanup = 'throw'; Expected = 'PromotionError/CleanupError'; Calls = 'guard,promote,cleanup' }
+)
+foreach ($case in $raiseCases) {
+    $calls = [Collections.Generic.List[string]]::new()
+    $guard = [Func[string]]{ $calls.Add('guard'); return $case.Guard }
+    $promote = [Func[string]]{
+        $calls.Add('promote')
+        if ($case.Promote -eq 'throw') { throw 'Synthetic promotion failure' }
+        return $case.Promote
+    }
+    $cleanup = [Func[string]]{
+        $calls.Add('cleanup')
+        if ($case.Cleanup -eq 'throw') { throw 'Synthetic cleanup failure' }
+        return $case.Cleanup
+    }
+    $result = [CodexSharedSession.TerminalWindows]::RunTemporaryRaise($guard, $promote, $cleanup)
+    if ($result -cne $case.Expected -or ($calls -join ',') -cne $case.Calls) {
+        throw "Temporary raise failed: $($case.Name). Result=$result; calls=$($calls -join ',')."
+    }
+}
+
+"Terminal focus: $($cases.Count) selection and $($raiseCases.Count) guard/cleanup tests passed; native source compiled. No native window APIs were called."
