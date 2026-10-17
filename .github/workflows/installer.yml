@@ -1,0 +1,80 @@
+name: Windows installer
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run test:powershell
+        shell: pwsh
+      - run: ./installer/Build-Installer.Tests.ps1
+        shell: pwsh
+      - name: Verify and prepare bundled runtimes
+        shell: pwsh
+        run: ./installer/Prepare-Payload.ps1 -PayloadDirectory "$PWD/.build/payload"
+      - name: Install the verified compiler on the disposable runner
+        shell: pwsh
+        run: ./installer/Prepare-Compiler.ps1 -CompilerDirectory "$env:RUNNER_TEMP/session-terminal-inno"
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          ./installer/Build-Installer.ps1 -PayloadDirectory "$PWD/.build/payload" -CompilerPath "$env:RUNNER_TEMP/session-terminal-inno/ISCC.exe" -OutputDirectory "$PWD/dist" -Version $version
+      - name: Test installation and uninstallation
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem dist/*-setup.exe)
+          if ($installer.Count -ne 1) { throw 'Expected exactly one installer.' }
+          ./installer/Test-InstalledPackage.ps1 -InstallerPath $installer[0].FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-installer
+          path: |
+            dist/*-setup.exe
+            dist/*-setup.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: installer-diagnostics
+          path: .build/smoke/*.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64-installer
+          path: dist
+      - name: Publish verified Preview assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./installer/Publish-Release.ps1 -Tag $env:GITHUB_REF_NAME -AssetsDirectory dist

@@ -1,7 +1,27 @@
 # Loaded by production.ps1. Discovery never changes the installed application.
+function Get-SessionBridgePowerShell {
+    $command = Get-Command pwsh.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $candidates = @(
+        (Join-Path $PSScriptRoot 'runtime\powershell\pwsh.exe')
+        $(if ($command) { $command.Source })
+        (Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe')
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\PowerShell\7\pwsh.exe')
+        (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell\pwsh.exe')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -Unique
+    foreach ($candidate in $candidates) {
+        $versionText = & $candidate -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+        $version = $null
+        if ($LASTEXITCODE -eq 0 -and [Version]::TryParse(($versionText | Out-String).Trim(), [ref]$version) -and $version -ge [Version]'7.4') {
+            return $candidate
+        }
+    }
+    throw 'PowerShell 7.4 or newer was not found. Repair this installation, or install PowerShell 7 when running from source.'
+}
+
 function Get-SessionBridgeNode {
     $command = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     $candidates = @(
+        (Join-Path $PSScriptRoot 'runtime\node\node.exe')
         $(if ($command) { $command.Source })
         (Join-Path $env:ProgramFiles 'nodejs\node.exe')
         (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\native\node\node.exe')
