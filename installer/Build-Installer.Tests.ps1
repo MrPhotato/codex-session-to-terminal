@@ -59,7 +59,20 @@ try {
     if ((Get-Content -LiteralPath (Join-Path $payload 'runtime\node\LICENSE') -Raw).Trim() -cne 'runtime-license-sentinel') {
         throw 'Bundled runtime files were changed.'
     }
-    if (!$include.Contains('Start.cmd') -or !$include.Contains('Dependencies.ps1')) { throw 'First-start entry files are missing.' }
+    if (!$include.Contains('Start.cmd') -or !$include.Contains('Dependencies.ps1') -or !$include.Contains('Execution-Policy.ps1')) { throw 'First-start entry files are missing.' }
+
+    # A tiny command fixture has no PE version resource. Its supported version
+    # response must pass; a different version or failed probe must still fail.
+    $compilerFixture = Join-Path $work 'compiler\compiler-fixture.cmd'
+    $compileParameters = $parameters.Clone()
+    $compileParameters.ValidateOnly = $false
+    $compileParameters.CompilerPath = $compilerFixture
+    Write-FixtureFile $compilerFixture "@echo off`r`nif `"%~1`"==`"--version`" (`r`n  echo 7.1.0`r`n  exit /b 0`r`n)`r`nexit /b 37"
+    Assert-Throws { & $build @compileParameters } '*compilation failed with exit code 37*'
+    Write-FixtureFile $compilerFixture "@echo off`r`necho 7.1.1`r`nexit /b 0"
+    Assert-Throws { & $build @compileParameters } '*requires the pinned Inno Setup compiler version 7.1.0*'
+    Write-FixtureFile $compilerFixture "@echo off`r`necho 7.1.0`r`nexit /b 3"
+    Assert-Throws { & $build @compileParameters } '*requires the pinned Inno Setup compiler version 7.1.0*'
 
     Write-FixtureExecutable (Join-Path $payload 'runtime\node\node.exe') -Machine 0x014c
     Assert-Throws { & $build @parameters } '*not Windows x64*'
@@ -81,7 +94,7 @@ try {
     if ($deleteEntries.Count -ne 1 -or $deleteEntries[0] -cne 'Type: filesandordirs; Name: "{app}\node_modules"') {
         throw 'Uninstall cleanup must be limited to the fixed application dependency directory.'
     }
-    'Installer staging, x64 checks, private-file exclusion, license preservation, and lifecycle constraints passed. No compiler, installer, or application was run.'
+    'Installer staging, x64 checks, private-file exclusion, license preservation, compiler-version guards, and lifecycle constraints passed. No real compiler, installer, or application was run.'
 } finally {
     $resolvedWork = [IO.Path]::GetFullPath($work)
     $resolvedParent = [IO.Path]::GetFullPath($workParent).TrimEnd('\') + '\'

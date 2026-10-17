@@ -96,8 +96,10 @@ Set-Content -LiteralPath $includePath -Value $includeLines -Encoding utf8
 if ($ValidateOnly) {
     return [pscustomobject]@{ PayloadDirectory = $payload; SourceFileCount = $sourceFiles.Count; Version = $Version; IncludePath = $includePath }
 }
-$compilerVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($compiler)
-if ($compilerVersion.FileMajorPart -ne 7 -or $compilerVersion.FileMinorPart -ne 1 -or $compilerVersion.FileBuildPart -ne 0) {
+# --version queries the loaded compiler engine. The ISCC PE file resource is
+# not the supported engine-version interface (Inno 7.1.0, Projects/ISCC.dpr).
+$compilerVersion = (& $compiler --version 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $compilerVersion -cne '7.1.0') {
     throw 'The installer build requires the pinned Inno Setup compiler version 7.1.0.'
 }
 $compilerArguments = @('/Qp', "/DAppVersion=$Version", "/DPayloadRoot=$payload", "/DPayloadFilesInclude=$includePath",
