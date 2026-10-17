@@ -49,7 +49,10 @@ try {
     if (!$startProcess.WaitForExit(60000)) { $startProcess.Kill($true); throw 'Installed Start entry did not return.' }
     $startLog = $outTask.Result + $errTask.Result
     $startLog | Set-Content -LiteralPath (Join-Path $logs 'start-without-desktop.log')
-    if ($startProcess.ExitCode -eq 0 -or $startLog -notmatch 'ChatGPT Desktop is not installed') { throw 'Installed Start entry did not reach the missing-Desktop guard.' }
+    if ($startProcess.ExitCode -eq 0 -or $startLog -notmatch 'ChatGPT Desktop is not installed') {
+        Write-Host $startLog
+        throw 'Installed Start entry did not reach the missing-Desktop guard.'
+    }
 } finally { $startProcess.Dispose() }
 if ((Test-Path -LiteralPath $privateRoot) -or (Test-Path -LiteralPath (Join-Path $app 'node_modules'))) { throw 'Missing-Desktop guard changed state.' }
 

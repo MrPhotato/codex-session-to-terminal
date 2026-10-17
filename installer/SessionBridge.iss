@@ -33,6 +33,7 @@ RestartApplications=no
 AlwaysRestart=no
 UninstallRestartComputer=no
 CreateUninstallRegKey=yes
+UninstallDisplayName=Codex Session to Terminal
 UninstallDisplayIcon={app}\assets\icon.ico
 SetupIconFile={#PayloadRoot}\assets\icon.ico
 LicenseFile={#PayloadRoot}\LICENSE
