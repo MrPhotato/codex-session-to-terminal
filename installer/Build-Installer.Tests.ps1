@@ -101,3 +101,5 @@ try {
     if (!$resolvedWork.StartsWith($resolvedParent, [StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing unexpected test cleanup path.' }
     if (Test-Path -LiteralPath $resolvedWork) { Remove-Item -LiteralPath $resolvedWork -Recurse -Force }
 }
+# Expected native failures above must not become the CI shell's final exit code.
+$global:LASTEXITCODE = 0
