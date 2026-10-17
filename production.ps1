@@ -1,6 +1,6 @@
 #requires -Version 7.4
 param(
-    [ValidateSet('Prepare','Launch','Status','OpenCli','StopShortcut')]
+    [ValidateSet('Start','Prepare','Launch','Status','OpenCli','StopShortcut')]
     [string]$Action = 'Status',
     [string]$ThreadId
 )
@@ -14,6 +14,8 @@ $expectedCli = '0.163.0-alpha.10.2'
 $pwshPath = Join-Path $PSHOME 'pwsh.exe'
 . (Join-Path $PSScriptRoot 'Launcher-Environment.ps1')
 . (Join-Path $PSScriptRoot 'Discovery.ps1')
+. (Join-Path $PSScriptRoot 'Start-Flow.ps1')
+. (Join-Path $PSScriptRoot 'Dependencies.ps1')
 
 function Read-PrivateConfig {
     if (!(Test-Path -LiteralPath $configFile)) { throw 'Run Prepare first.' }
@@ -29,7 +31,8 @@ function Get-DesktopRecord {
 }
 function Get-NormalDesktop {
     @(Get-CimInstance Win32_Process -Filter "Name = 'ChatGPT.exe'" | Where-Object {
-        $_.CommandLine -and $_.CommandLine -notmatch '--type='
+        # An unreadable command line is not proof that no main process exists.
+        !$_.CommandLine -or $_.CommandLine -notmatch '--type='
     })
 }
 function Get-Port {
@@ -50,7 +53,20 @@ function Native-Args($values) {
 }
 
 switch ($Action) {
+    'Start' {
+        $launcherScript = $PSCommandPath
+        Invoke-SessionBridgeStart -GetRunningDesktop { Get-NormalDesktop } `
+            -Prepare {
+                [void](Get-CurrentPackage)
+                Initialize-SessionBridgeDependencies `
+                    -TestReady { Test-SessionBridgeDependencies -ApplicationRoot $PSScriptRoot -ExpectedCliVersion $expectedCli } `
+                    -Install { Install-SessionBridgeDependencies -ApplicationRoot $PSScriptRoot -NodePath (Get-SessionBridgeNode) }
+                & $launcherScript -Action Prepare
+            } `
+            -Launch { & $launcherScript -Action Launch }
+    }
     'Prepare' {
+        Assert-SessionBridgeDesktopClosed -RunningDesktop @(Get-NormalDesktop)
         $package = Get-CurrentPackage
         if (Test-OwnedProcess (Get-DesktopRecord)) { throw 'The shared Desktop is still running; its launcher and connection settings will not be changed.' }
         $realCli = Get-SessionBridgeInstalledCli -ExpectedVersion $expectedCli
@@ -97,10 +113,10 @@ switch ($Action) {
         Write-Output 'Prepared. The running Desktop, normal profile, and system launch settings have not changed.'
     }
     'Launch' {
+        Assert-SessionBridgeDesktopClosed -RunningDesktop @(Get-NormalDesktop)
         $config = Read-PrivateConfig
         [void](Get-CurrentPackage)
         if ($config.desktopVersion -ne $expectedDesktop -or $config.cliVersion -ne $expectedCli) { throw 'Run Prepare to update the local launcher settings before opening ChatGPT in shared mode.' }
-        if ((Get-NormalDesktop).Count -gt 0) { throw 'Please exit the normal ChatGPT app after its tasks finish, then open this launcher. The running app will not be stopped automatically.' }
         $stopFlag = Join-Path $privateRoot 'stop.flag'
         if (Test-Path -LiteralPath $stopFlag) { Remove-Item -LiteralPath $stopFlag }
         $generation = [Guid]::NewGuid().ToString()

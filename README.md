@@ -8,7 +8,7 @@
 
 源码仓库：[MrPhotato/codex-session-to-terminal](https://github.com/MrPhotato/codex-session-to-terminal)。
 
-目前提供手动部署的源码工具，尚无安装向导或系统卸载入口。按下方步骤准备运行环境后即可使用；GitHub 的源码下载包不等于 Windows 安装包。
+提供当前用户安装的 Windows 安装包，也可以从源码手动部署。安装包见 [GitHub Releases](https://github.com/MrPhotato/codex-session-to-terminal/releases)，下载其中以 `windows-x64-setup.exe` 结尾的文件；GitHub 自动生成的 Source code ZIP 是源码包。
 
 ## 能做什么
 
@@ -27,14 +27,29 @@
 | Windows | x64 |
 | ChatGPT Desktop / OpenAI.Codex 包 | `26.1013.3656.0`，已完成正常安装与登录 |
 | Desktop 内置 CLI 与独立 CLI | `0.163.0-alpha.10.2` |
-| PowerShell | 7.4 或更新版本 |
-| Node.js / npm | Node.js 22 或更新版本，附带 npm |
+| PowerShell | 安装包自带 7.6.5；源码部署需 7.4 或更新版本 |
+| Node.js / npm | 安装包自带 Node.js 24.22.0 和 npm；源码部署需 Node.js 22 或更新版本 |
 | C# 编译器 | Windows .NET Framework 4 的 `csc.exe` |
 | Windows Terminal | 推荐；没有时使用 PowerShell 窗口 |
 
 版本检查会拒绝未验证的 Desktop。不要只改版本号来绕过检查；客户端升级后，应先用原入口正常使用，再重新验证连接兼容性。
 
 ## 开始使用
+
+### 使用安装包
+
+1. 下载并运行 `Codex-Session-to-Terminal-0.1.0-preview.1-windows-x64-setup.exe`。安装在当前用户目录，无需管理员权限。
+2. 先正常安装、打开并登录兼容版本的 ChatGPT。完成正在运行的任务后，正常退出 ChatGPT。
+3. 从开始菜单打开 **Codex Session to Terminal**。首次启动需要联网下载锁定版本的官方 CLI 和相关依赖，准备成功后才打开 ChatGPT。
+4. 在有键盘焦点的本地聊天中按 **Ctrl+Alt+L**，打开同步终端；输入前点击终端。
+
+安装完成不会自动启动或关闭 ChatGPT。如果 ChatGPT 已在运行，启动入口会提示先退出，不中断任务。已有同名桌面快捷方式会保留；安装版可始终从开始菜单进入。
+
+可在 Windows“已安装的应用”中卸载。程序文件、快捷方式和下载的程序依赖会被移除，私有配置、ChatGPT 账号和聊天历史会保留。程序文件仍在使用时，升级或卸载会提示先退出，安装器不会结束相关进程。
+
+首个 Preview 未做代码签名，Windows 可能显示“未知发布者”；发布页同时提供 SHA256 校验文件。
+
+### 从源码部署
 
 1. 将源码放到一个固定目录，打开该目录的终端。
 2. 安装锁定版本的依赖：
@@ -51,12 +66,13 @@
 
 本工具保留原账号和历史，不设置系统级环境变量。已在普通模式运行的后台不能直接热迁移；启动器不会自动关闭正在运行的 Desktop。
 
-本版面向默认 `%USERPROFILE%\.codex` 配置目录，自定义 `CODEX_HOME` 尚未适配。若 Windows 阻止下载的脚本，请先审阅源码，再按本机策略对信任的文件解除锁定；本项目不会自动更改脚本执行策略。
+本版面向默认 `%USERPROFILE%\.codex` 配置目录，自定义 `CODEX_HOME` 尚未适配。启动器不会修改 Windows 的用户或机器执行策略；仅在各作用域都未配置、Windows 使用默认 Restricted 时，为这次启动进程选择 RemoteSigned。管理员或用户明确设置的 Restricted / AllSigned 会保留并阻止启动。源码下载文件还需符合本机的脚本信任策略。
 
 ## 日常入口
 
 | 文件 | 用途 |
 | --- | --- |
+| `Start.cmd` | 普通启动入口；检查运行状态、准备依赖和配置后打开 Desktop |
 | `Prepare.cmd` | 首次准备或重新验证版本后的配置更新 |
 | `Enable-Normal-Desktop.cmd` | 以共享连接方式打开日常 Desktop |
 | `Open-Current-Chat.cmd` | 复制当前本地聊天链接后，手动打开对应 CLI |

@@ -1,0 +1,23 @@
+{
+  "node": {
+    "version": "24.22.0",
+    "file": "node-v24.22.0-win-x64.zip",
+    "url": "https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip",
+    "sha256": "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3",
+    "verification": "https://nodejs.org/dist/v24.22.0/SHASUMS256.txt"
+  },
+  "powershell": {
+    "version": "7.6.5",
+    "file": "PowerShell-7.6.5-win-x64.zip",
+    "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/PowerShell-7.6.5-win-x64.zip",
+    "sha256": "32eb8f6cdce08f86e987d625a2733e54ac3e289ae7e1621b14c0b5bcec2434ea",
+    "verification": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/hashes.sha256"
+  },
+  "innoSetup": {
+    "version": "7.1.0",
+    "file": "innosetup-7.1.0-x64.exe",
+    "url": "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe",
+    "sha256": "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f",
+    "verification": "https://github.com/jrsoftware/issrc/releases/expanded_assets/is-7_1_0"
+  }
+}
