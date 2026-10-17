@@ -8,6 +8,8 @@
 
 源码仓库：[MrPhotato/codex-session-to-terminal](https://github.com/MrPhotato/codex-session-to-terminal)。
 
+目前提供手动部署的源码工具，尚无安装向导或系统卸载入口。按下方步骤准备运行环境后即可使用；GitHub 的源码下载包不等于 Windows 安装包。
+
 ## 能做什么
 
 - 从日常 Desktop 的当前本地聊天，按 **Ctrl+Alt+L** 打开对应 CLI。
@@ -45,7 +47,7 @@
 4. 完成当前任务并退出 ChatGPT，然后双击 `Enable-Normal-Desktop.cmd`。
 5. 在已有键盘焦点的本地聊天中按 **Ctrl+Alt+L**。当前聊天会在新终端中打开；需要输入时，点击终端。
 
-可为 `Enable-Normal-Desktop.cmd` 创建 Windows 快捷方式，并将图标设为 `assets/icon.ico`。`assets/icon.png` 用于项目页面；ICO 包含 16–256 像素的多个尺寸。
+可为 `Enable-Normal-Desktop.cmd` 创建名为 **Codex Session to Terminal** 的 Windows 快捷方式，并将图标设为 `assets/icon.ico`。`assets/icon.png` 用于项目页面；ICO 包含 16–256 像素的多个尺寸。
 
 本工具保留原账号和历史，不设置系统级环境变量。已在普通模式运行的后台不能直接热迁移；启动器不会自动关闭正在运行的 Desktop。
 

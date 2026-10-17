@@ -90,7 +90,7 @@ export class RpcClient {
       this.socket.addEventListener('close', () => { clearTimeout(timer); reject(new Error('App-server closed before initialization.')); }, { once: true });
     });
     this.serverInfo = await this.call('initialize', {
-      clientInfo: { name: this.name, title: 'Session Bridge connection check', version: '0.1.0' },
+      clientInfo: { name: this.name, title: 'Codex Session to Terminal connection check', version: '0.1.0' },
       capabilities: { experimentalApi: true },
     });
     this.notify('initialized', {});
