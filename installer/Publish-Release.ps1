@@ -20,18 +20,27 @@ $checksum = @($files | Where-Object Name -Like '*-setup.exe.sha256')
 if ($installer.Count -ne 1 -or $checksum.Count -ne 1) { throw 'Unexpected release files.' }
 $expected = ((Get-Content $checksum[0].FullName -Raw).Trim() -split '\s+')[0]
 if ((Get-FileHash $installer[0].FullName -Algorithm SHA256).Hash -ine $expected) { throw 'Artifact checksum mismatch.' }
-$releaseJson = gh api "repos/$repository/releases/tags/$Tag" 2>$null
-$release = if ($LASTEXITCODE -eq 0) { $releaseJson | ConvertFrom-Json } else { $null }
-if ($release -and (!$release.draft -or $release.tag_name -cne $Tag)) { throw 'An existing public release will not be overwritten.' }
-if (!$release) {
+# The REST tag endpoint only finds published releases. gh release view also
+# resolves drafts, after which the numeric REST endpoint includes asset digests.
+$releaseJson = gh release view $Tag --repo $repository --json databaseId,isDraft,tagName 2>$null
+$releaseIdentity = if ($LASTEXITCODE -eq 0) { $releaseJson | ConvertFrom-Json } else { $null }
+if ($releaseIdentity -and (!$releaseIdentity.isDraft -or $releaseIdentity.tagName -cne $Tag)) { throw 'An existing public release will not be overwritten.' }
+if (!$releaseIdentity) {
     gh release create $Tag --verify-tag --draft --prerelease --title "Codex Session to Terminal $Tag" --notes-file (Join-Path $PSScriptRoot 'RELEASE_NOTES.md')
     if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }
+    $releaseJson = gh release view $Tag --repo $repository --json databaseId,isDraft,tagName
+    if ($LASTEXITCODE -ne 0) { throw 'Created draft identity readback failed.' }
+    $releaseIdentity = $releaseJson | ConvertFrom-Json
 }
+if (!$releaseIdentity.isDraft -or $releaseIdentity.tagName -cne $Tag -or [long]$releaseIdentity.databaseId -le 0) { throw 'Draft release identity readback failed.' }
+$releaseId = [long]$releaseIdentity.databaseId
+$release = gh api "repos/$repository/releases/$releaseId" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or !$release.draft -or $release.tag_name -cne $Tag -or $release.id -ne $releaseId) { throw 'Draft release readback failed before upload.' }
 gh release upload $Tag @($files.FullName) --clobber
 if ($LASTEXITCODE -ne 0) { throw 'Draft asset upload failed; rerun this workflow to recover the draft.' }
 
 function Assert-ReleaseAssets($Release, [bool]$ExpectDraft) {
-    if ($Release.draft -ne $ExpectDraft -or !$Release.prerelease -or $Release.tag_name -cne $Tag) { throw 'Release state readback failed.' }
+    if ($Release.id -ne $releaseId -or $Release.draft -ne $ExpectDraft -or !$Release.prerelease -or $Release.tag_name -cne $Tag) { throw 'Release state readback failed.' }
     if (@($Release.assets).Count -ne $files.Count) { throw 'Unexpected release assets.' }
     foreach ($file in $files) {
         $asset = @($Release.assets | Where-Object name -CEQ $file.Name)
@@ -41,12 +50,12 @@ function Assert-ReleaseAssets($Release, [bool]$ExpectDraft) {
         }
     }
 }
-$release = gh api "repos/$repository/releases/tags/$Tag" | ConvertFrom-Json
+$release = gh api "repos/$repository/releases/$releaseId" | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Draft release readback failed.' }
 Assert-ReleaseAssets $release $true
 gh release edit $Tag --draft=false
 if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
-$release = gh api "repos/$repository/releases/tags/$Tag" | ConvertFrom-Json
+$release = gh api "repos/$repository/releases/$releaseId" | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Published release readback failed.' }
 Assert-ReleaseAssets $release $false
 $release.html_url
