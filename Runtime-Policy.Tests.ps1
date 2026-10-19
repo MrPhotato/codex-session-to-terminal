@@ -85,7 +85,7 @@ public static class PolicyFixture {
 function Get-SessionBridgePowerShell { '$realPath' }
 function Get-SessionBridgeNode { '$($actualNode.Replace("'", "''"))' }
 "@ | Set-Content -LiteralPath (Join-Path $testRoot 'Discovery.ps1') -Encoding utf8
-    foreach ($name in @('CST-Tray.ps1', 'cst-terminal.mjs', 'Thread-Link.ps1', 'Terminal-Focus.ps1', 'Watch-Chat-Link.ps1')) {
+    foreach ($name in @('CST-Tray.ps1', 'CST-Panel.ps1', 'CST-Panel.cs', 'CST-Presence.ps1', 'cst-presence.mjs', 'cst-terminal.mjs', 'Thread-Link.ps1', 'Terminal-Focus.ps1', 'Watch-Chat-Link.ps1')) {
         '# inert test placeholder; must never execute' | Set-Content -LiteralPath (Join-Path $testRoot $name)
     }
     'param([string]$Action); "legacy-policy-ready=$Action"; exit 0' | Set-Content -LiteralPath (Join-Path $testRoot 'production.ps1')

@@ -16,6 +16,7 @@ Set-StrictMode -Version Latest
 # .git, and a developer's node_modules are not part of the installer payload.
 $sourceFiles = @(
     'Start-CST.cmd', 'Start-CST.ps1', 'CST-Tray.ps1', 'desktop-pipe-proxy.ps1',
+    'CST-Panel.ps1', 'CST-Panel.cs', 'CST-Presence.ps1', 'cst-presence.mjs',
     'desktop-ipc.mjs', 'cst-transport.mjs', 'cst-state.mjs', 'cst-queue.mjs', 'cst-terminal.mjs', 'LEGACY.md',
     'Start.cmd', 'Start-Flow.ps1', 'Dependencies.ps1', 'Execution-Policy.ps1', 'bootstrap.ps1', 'production.ps1',
     'Discovery.ps1', 'Build-Shim.ps1', 'CodexSharedShim.cs',
@@ -23,7 +24,8 @@ $sourceFiles = @(
     'Thread-Link.ps1', 'bridge-shim.mjs', 'rpc-client.mjs', 'check-live.mjs', 'check-startup.mjs',
     'Enable-Normal-Desktop.cmd', 'Open-Current-Chat.cmd', 'Prepare.cmd',
     'Status.cmd', 'Stop-Shortcut.cmd', 'package.json', 'package-lock.json',
-    'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md', 'assets\icon.ico', 'assets\icon.png'
+    'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md', 'assets\icon.ico', 'assets\icon.png',
+    'assets\session-panel-dark.png', 'assets\session-panel-light.png'
 )
 $repo = (Resolve-Path -LiteralPath $RepoRoot).Path.TrimEnd('\')
 $payload = [IO.Path]::GetFullPath($PayloadDirectory).TrimEnd('\')

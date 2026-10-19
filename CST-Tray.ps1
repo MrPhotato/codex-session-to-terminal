@@ -114,14 +114,17 @@ function Start-CstTray {
     if (!(Test-Path -LiteralPath $NodeExecutable -PathType Leaf)) { throw 'The CST Node.js runtime is missing.' }
     . (Join-Path $PSScriptRoot 'Thread-Link.ps1')
     . (Join-Path $PSScriptRoot 'Terminal-Focus.ps1')
+    . (Join-Path $PSScriptRoot 'CST-Panel.ps1')
+    . (Join-Path $PSScriptRoot 'CST-Presence.ps1')
     Initialize-CodexTerminalFocus
     if (!('CodexSharedSession.ClipboardLinkListener' -as [type])) { Add-Type -TypeDefinition (Get-CstClipboardListenerSource -Path (Join-Path $PSScriptRoot 'Watch-Chat-Link.ps1')) }
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
+    Initialize-CstPanel
+    [void][Windows.Forms.Application]::SetHighDpiMode([Windows.Forms.HighDpiMode]::PerMonitorV2)
+    [Windows.Forms.Application]::EnableVisualStyles()
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $mutex = [Threading.Mutex]::new($false, ('Local\CSTIndependent-' + $userSid))
-    $ownsMutex = $false; $listener = $null; $tray = $null; $icon = $null; $menu = $null; $runDirectory = $null
-    $state = @{ Exit = $false; Desktop = $null; LastThread = ''; LastLaunch = [DateTime]::MinValue }
+    $ownsMutex = $false; $listener = $null; $tray = $null; $icon = $null; $menu = $null; $panel = $null; $heartbeat = $null; $runDirectory = $null
+    $state = @{ Exit = $false; Desktop = $null; LastThread = ''; LastLaunch = [DateTime]::MinValue; Text = $null }
     try {
         try { $ownsMutex = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
         if (!$ownsMutex) { return }
@@ -130,21 +133,35 @@ function Start-CstTray {
         # .NET ticks exceed JavaScript's exact integer range. Keep the generation
         # identity lossless for terminal readers.
         @{ pid = $PID; startTicks = (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDirectory 'owner.json') -Encoding utf8
-        [IO.File]::WriteAllText((Join-Path $runDirectory 'heartbeat'), [DateTime]::UtcNow.ToString('o'))
+        $heartbeat = [CodexSessionToTerminal.TrayHeartbeat]::new($runDirectory)
+        $chinese = [CodexSessionToTerminal.SystemAppearance]::UiLanguage().StartsWith('zh', [StringComparison]::OrdinalIgnoreCase)
+        $state.Text = Get-CstInterfaceText -Chinese $chinese
+        $panel = [CodexSessionToTerminal.SessionPanel]::new((Join-Path $PSScriptRoot 'assets\icon.ico'))
+        Update-CstPanel -Panel $panel -Rows @() -Dark ([CodexSessionToTerminal.SystemAppearance]::IsDark()) -Chinese $chinese
         $menu = [Windows.Forms.ContextMenuStrip]::new()
-        $statusItem = $menu.Items.Add('Waiting for ChatGPT'); $statusItem.Enabled = $false
-        $hintItem = $menu.Items.Add('In ChatGPT, press Ctrl+Alt+L'); $hintItem.Enabled = $false
+        $sessionsItem = $menu.Items.Add($state.Text.Sessions)
+        $sessionsItem.add_Click({ $panel.ShowPanel() })
         [void]$menu.Items.Add([Windows.Forms.ToolStripSeparator]::new())
-        $legacyItem = $menu.Items.Add('Legacy shared startup: show files')
+        $statusItem = $menu.Items.Add($state.Text.Waiting); $statusItem.Enabled = $false
+        $hintItem = $menu.Items.Add($state.Text.Hint); $hintItem.Enabled = $false
+        [void]$menu.Items.Add([Windows.Forms.ToolStripSeparator]::new())
+        $legacyItem = $menu.Items.Add($state.Text.Legacy)
         $legacyItem.add_Click({
             # Reveal the fallback; never invoke it or restart Desktop from the tray.
             Start-Process -FilePath explorer.exe -ArgumentList @('/select,', ('"' + (Join-Path $PSScriptRoot 'Start.cmd') + '"')) -WindowStyle Normal | Out-Null
         })
-        $exitItem = $menu.Items.Add('Exit CST')
+        $exitItem = $menu.Items.Add($state.Text.Exit)
         $exitItem.add_Click({ $state.Exit = $true })
         $tray = [Windows.Forms.NotifyIcon]::new()
         $icon = [Drawing.Icon]::new((Join-Path $PSScriptRoot 'assets\icon.ico'))
-        $tray.Icon = $icon; $tray.ContextMenuStrip = $menu; $tray.Text = 'CST - waiting for ChatGPT'; $tray.Visible = $true
+        $tray.Icon = $icon; $tray.ContextMenuStrip = $menu; $tray.Text = $state.Text.TooltipWaiting; $tray.Visible = $true
+        $tray.add_MouseClick({ param($sender, $eventArgs)
+            if ($eventArgs.Button -eq [Windows.Forms.MouseButtons]::Left) { $panel.ShowPanel() }
+        })
+        $tray.add_BalloonTipClicked({ $panel.ShowPanel() })
+        # Windows may suppress this under Focus Assist or notification settings.
+        # Show it once per tray process, without bringing a window to the foreground.
+        $tray.ShowBalloonTip(5000, 'Codex Session to Terminal', $state.Text.Running, [Windows.Forms.ToolTipIcon]::Info)
         $onTextChanged = [Action[string]] {
             param([string]$Text)
             $thread = ConvertFrom-CodexLocalThreadLink -Text $Text
@@ -157,7 +174,7 @@ function Start-CstTray {
                 if ($current.StartTime.ToUniversalTime().Ticks -ne $state.Desktop.StartTicks) { return }
                 Invoke-CstTerminal -ThreadId $thread -ControlDirectory $runDirectory -NodeExecutable $NodeExecutable -DesktopPid $state.Desktop.Id -BackendPath $state.Desktop.BackendPath
             }
-            catch { $tray.ShowBalloonTip(4000, 'CST', 'The terminal could not be opened. ChatGPT is still running normally.', [Windows.Forms.ToolTipIcon]::Warning) }
+            catch { $tray.ShowBalloonTip(4000, 'CST', $state.Text.OpenFailed, [Windows.Forms.ToolTipIcon]::Warning) }
         }
         $nextCheck = [DateTime]::MinValue
         while (!$state.Exit -and !(Test-Path -LiteralPath (Join-Path $runDirectory 'stop.flag'))) {
@@ -171,9 +188,13 @@ function Start-CstTray {
                     $state.Desktop = $desktop
                     if ($desktop) { $listener = [CodexSharedSession.ClipboardLinkListener]::new([uint32]$desktop.Id); $listener.add_TextChanged($onTextChanged) }
                 }
-                $statusItem.Text = if ($desktop) { 'Ready - ChatGPT is running' } else { 'Waiting for ChatGPT' }
-                $tray.Text = if ($desktop) { 'CST - Ctrl+Alt+L opens this chat' } else { 'CST - waiting for ChatGPT' }
-                [IO.File]::WriteAllText((Join-Path $runDirectory 'heartbeat'), [DateTime]::UtcNow.ToString('o'))
+                $chinese = [CodexSessionToTerminal.SystemAppearance]::UiLanguage().StartsWith('zh', [StringComparison]::OrdinalIgnoreCase)
+                $state.Text = Get-CstInterfaceText -Chinese $chinese
+                $sessionsItem.Text = $state.Text.Sessions; $hintItem.Text = $state.Text.Hint
+                $legacyItem.Text = $state.Text.Legacy; $exitItem.Text = $state.Text.Exit
+                $statusItem.Text = if ($desktop) { $state.Text.Ready } else { $state.Text.Waiting }
+                $tray.Text = if ($desktop) { $state.Text.TooltipReady } else { $state.Text.TooltipWaiting }
+                Update-CstPanel -Panel $panel -Rows @(Get-CstSessionRows -ControlDirectory $runDirectory) -Dark ([CodexSessionToTerminal.SystemAppearance]::IsDark()) -Chinese $chinese
                 $nextCheck = [DateTime]::UtcNow.AddSeconds(2)
             }
             if ($listener) { $listener.Pump() }
@@ -182,7 +203,9 @@ function Start-CstTray {
         }
     } finally {
         if ($runDirectory) { try { Stop-CstRun -ControlDirectory $runDirectory } catch { } }
+        if ($heartbeat) { $heartbeat.Dispose() }
         if ($listener) { $listener.Dispose() }
+        if ($panel) { $panel.AllowClose = $true; $panel.Dispose() }
         if ($tray) { $tray.Visible = $false; $tray.Dispose() }
         if ($menu) { $menu.Dispose() }
         if ($icon) { $icon.Dispose() }
@@ -195,7 +218,12 @@ if (!$DefinitionsOnly) {
     try { Start-CstTray -NodeExecutable $NodePath }
     catch {
         Add-Type -AssemblyName System.Windows.Forms
-        [void][Windows.Forms.MessageBox]::Show('CST could not start. Check that its files and runtimes are installed correctly. ChatGPT was not changed.', 'Codex Session to Terminal')
+        $message = 'CST could not start. Check that its files and runtimes are installed correctly.'
+        if (Get-Command Get-CstInterfaceText -ErrorAction SilentlyContinue) {
+            $language = if ('CodexSessionToTerminal.SystemAppearance' -as [type]) { [CodexSessionToTerminal.SystemAppearance]::UiLanguage() } else { [Globalization.CultureInfo]::CurrentUICulture.Name }
+            $message = (Get-CstInterfaceText -Chinese $language.StartsWith('zh', [StringComparison]::OrdinalIgnoreCase)).StartFailed
+        }
+        [void][Windows.Forms.MessageBox]::Show($message, 'Codex Session to Terminal')
         exit 1
     }
 }

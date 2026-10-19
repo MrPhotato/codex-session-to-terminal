@@ -7,6 +7,7 @@ import { DesktopIpcClient } from './desktop-ipc.mjs';
 import { buildView } from './cst-state.mjs';
 import { verifiedDesktopTransport } from './cst-transport.mjs';
 import { createQueueSender } from './cst-queue.mjs';
+import { createSessionPresence } from './cst-presence.mjs';
 
 const segments = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 export const graphemes = text => Array.from(segments.segment(text), x => x.segment);
@@ -119,6 +120,7 @@ export async function main(args = process.argv.slice(2)) {
   if (interactive && !options['--control-directory']) throw new Error('Start the terminal from the CST tray.');
   const lease = options['--control-directory'] ? createTrayLease(options['--control-directory']) : () => true;
   if (!lease()) throw new Error('The CST tray is no longer running.');
+  const presence = options['--control-directory'] ? createSessionPresence({ controlDirectory: options['--control-directory'], threadId }) : null;
   let client, draft = '', pasteBuffer = '', deferredPaste = '', caret = 0, notice = '', status = '连接中…', offset = 0, busy = false, closed = false, pasted = false, renderTimer, updates = 0, connected = false, connecting = false;
   let view = { messages: [], activeTurnId: null };
   const draw = () => {
@@ -145,9 +147,10 @@ export async function main(args = process.argv.slice(2)) {
         } : undefined,
       });
       const isCurrent = () => !closed && client === current;
-      current.on('state', state => { if (isCurrent()) { view = buildView(state, { limit: 100 }); updates++; draw(); } });
+      current.on('state', state => { if (isCurrent()) { presence?.updateState(state); view = buildView(state, { limit: 100 }); updates++; draw(); } });
       current.on('status', value => {
         if (!isCurrent()) return;
+        presence?.updateStatus(value);
         connected = value.ready === true;
         status = ({ ready: '已连接 ChatGPT · 同一会话实时同步', connecting: '正在连接 ChatGPT…', initializing: '正在初始化…', discovering: '正在寻找当前会话…', syncing: '正在同步会话…', 'owner-unavailable': '会话暂未就绪 · 请在 ChatGPT 打开它', disconnected: '连接已断开 · Ctrl+R 重试', closed: '连接已关闭' })[value.phase] || '正在更新连接状态…';
         draw();
@@ -170,7 +173,7 @@ export async function main(args = process.argv.slice(2)) {
     if (rawMode) { try { process.stdin.setRawMode(false); } catch {} rawMode = false; }
     if (interactive) process.stdin.pause();
     if (terminalScreen) { terminalScreen = false; if (!process.stdout.destroyed) process.stdout.write('\x1b[?2004l\x1b[?25h\x1b[?1049l'); }
-    await client?.close();
+    try { await client?.close(); } finally { await presence?.close(); }
   };
   const shutdown = () => { void close(); };
   const insert = text => {

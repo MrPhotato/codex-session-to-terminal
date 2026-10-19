@@ -11,9 +11,17 @@
 ## 使用独立模式
 
 1. 像平常一样打开 ChatGPT。
-2. 双击 `Start-CST.cmd`，或开始菜单的 **CST - Independent**。CST 图标出现在系统托盘。
+2. 双击 `Start-CST.cmd`，或开始菜单的 **CST - Independent**。CST 图标出现在系统托盘，并发出一次启动通知。
 3. 在已有键盘焦点的本地 Work / Codex 聊天按 **Ctrl+Alt+L**，打开这条聊天的 CST 终端。输入前点击终端。
-4. 右键托盘图标选择 **Exit CST**，断开本轮所有 CST 终端；ChatGPT 和已接受的任务继续运行。
+4. 单击托盘图标查看终端会话面板。关闭面板会收回托盘。
+5. 右键托盘图标选择 **退出 CST / Exit CST**，断开本轮所有 CST 终端；ChatGPT 和已接受的任务继续运行。
+
+会话面板仅显示当前这轮 CST 打开的终端会话，展示实际连接状态和是否有任务运行。同一聊天打开多个终端时合并显示数量。关闭终端后自动移除，失去心跳的连接不会继续显示为已连接。面板的深浅色跟随 Windows 应用主题，中英文跟随 Windows 显示语言（其他语言使用英文），没有额外切换按钮。启动通知遵循 Windows 的通知和勿扰设置。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/session-panel-dark.png">
+  <img src="assets/session-panel-light.png" width="760" alt="CST 终端会话面板，展示示例会话的连接与运行状态">
+</picture>
 
 CST 使用 ChatGPT 自带的“复制聊天链接”快捷键。它仅在官方 Desktop 位于前台时处理新复制的本地链接；不会监听其他应用的聊天内容，也不会保存剪贴板。
 
@@ -39,7 +47,7 @@ CST 使用 ChatGPT 自带的“复制聊天链接”快捷键。它仅在官方 
 2. 等当前任务结束，再由你正常退出 ChatGPT。
 3. 打开 **CST - Legacy Shared Startup** 或原有 `Start.cmd` / `Enable-Normal-Desktop.cmd`。
 
-旧方案需要由 CST 启动共享后台，因此要求先退出普通启动的 ChatGPT；它不会强行关闭应用。完整说明见 [LEGACY.md](LEGACY.md)。托盘的 **Legacy shared startup: show files** 可以找到回退入口，不会替你重启 ChatGPT。
+旧方案需要由 CST 启动共享后台，因此要求先退出普通启动的 ChatGPT；它不会强行关闭应用。完整说明见 [LEGACY.md](LEGACY.md)。托盘的 **查看原版启动入口 / Show legacy startup files** 可以找到回退入口，不会替你重启 ChatGPT。
 
 从旧版升级时，已有同名快捷方式保持原目标；开始菜单另提供明确的 **Independent** 与 **Legacy Shared Startup** 两个入口。
 
@@ -59,7 +67,7 @@ CST 在现有 `codex-ipc` 管道注册自己的客户端身份，发现会话原
 
 发送和补充交给原 owner。排队使用当前桌面包自带后台的 `thread/queue/add` 追加接口：只有按排队时才启动短暂的隐藏辅助进程，只初始化、检查队列和追加消息，不加载会话或成为 writer。队列由原后台处理；跨进程发现可能需要数秒，桌面输入框是否显示排队项取决于该功能是否启用。
 
-独立模式状态位于 `%LOCALAPPDATA%\SessionBridge\independent\runs`，每轮使用独立目录，保存托盘进程身份、心跳和退出信号。聊天只在内存中显示，不额外保存账号、凭证或聊天正文。退出托盘或心跳失效会断开终端；已经被会话接受的任务不会因此取消。
+独立模式状态位于 `%LOCALAPPDATA%\SessionBridge\independent\runs`，每轮使用独立目录，保存托盘进程身份、心跳和退出信号。面板读取该轮 `sessions` 目录中的会话 ID、标题、终端进程、连接阶段和更新时间；终端正常退出时删除自身记录。不会额外保存账号、凭证或聊天正文。退出托盘或心跳失效会断开终端；已经被会话接受的任务不会因此取消。
 
 内部协议未来可能变化。协议不匹配时停止该连接并显示错误，旧方案仍可选择。仅检查文件版本不会触发限制。
 

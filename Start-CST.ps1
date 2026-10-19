@@ -7,7 +7,7 @@ $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'Execution-Policy.ps1')
 $runtime = Get-SessionBridgePowerShell
 $node = Get-SessionBridgeNode
-foreach ($name in @('CST-Tray.ps1','cst-terminal.mjs','Thread-Link.ps1','Terminal-Focus.ps1','Watch-Chat-Link.ps1')) {
+foreach ($name in @('CST-Tray.ps1','CST-Panel.ps1','CST-Panel.cs','CST-Presence.ps1','cst-presence.mjs','cst-terminal.mjs','Thread-Link.ps1','Terminal-Focus.ps1','Watch-Chat-Link.ps1')) {
     if (!(Test-Path -LiteralPath (Join-Path $PSScriptRoot $name) -PathType Leaf)) { throw "CST is incomplete: $name is missing." }
 }
 $policy = Get-SessionBridgeRuntimePolicy -RuntimePath $runtime
