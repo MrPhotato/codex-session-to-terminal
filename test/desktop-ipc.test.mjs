@@ -87,6 +87,29 @@ async function fixture(t, options = {}) {
   return result;
 }
 
+// Exercise real request/deadline handling without waiting minutes or opening a
+// pipe. Only the already-connected transport is replaced; replies still pass
+// through the client's normal protocol receiver.
+function clockedHistoryFixture(t) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new DesktopIpcClient({ transportFactory() {} });
+  const messages = [];
+  client._closed = false; client._threadId = threadId; client._clientId = clientId;
+  client._owner = { clientId: ownerId }; client._revision = 1;
+  client._state = canonicalState({ partial: true }); client._status = { phase: 'ready', ready: true };
+  client._socket = { writable: true, write(bytes) { messages.push(JSON.parse(bytes.subarray(4))); }, end() {}, destroy() {} };
+  t.after(() => client.close());
+  return { client, messages, reply(revision = 2) {
+    const request = messages.find(message => message.method === 'thread-follower-load-complete-history');
+    client._receive({ type: 'response', requestId: request.requestId, resultType: 'success', method: request.method,
+      handledByClientId: ownerId, result: { revision } });
+  }, snapshot() {
+    client._receive({ type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: ownerId,
+      targetClientIds: [clientId], params: { hostId: 'local', conversationId: threadId,
+        change: { type: 'snapshot', revision: 2, conversationState: canonicalState() } } });
+  } };
+}
+
 test('requires a verified transport and validates bounds', () => {
   assert.throws(() => new DesktopIpcClient(), { code: 'VERIFIED_TRANSPORT_REQUIRED' });
   assert.throws(() => new DesktopIpcClient({ transportFactory() {}, maxFrameBytes: 300000000 }), /maxFrameBytes/);
@@ -434,7 +457,43 @@ test('already complete canonical history returns the same authoritative state wi
   const f = await fixture(t, { conversation: canonicalState() }); await f.client.connect(threadId);
   assert.equal(await f.client.ensureCompleteHistory(), f.client.state);
   assert.equal(f.historyLoads.length, 0); assert.equal(f.follows, 1);
-  for (const timeoutMs of [0, -1, 305001, 1.5]) await assert.rejects(f.client.ensureCompleteHistory({ timeoutMs }), /timeoutMs/);
+  for (const timeoutMs of [0, -1, 335001, 1.5]) await assert.rejects(f.client.ensureCompleteHistory({ timeoutMs }), /timeoutMs/);
+});
+
+test('default history hydration may finish after sixty seconds within the Desktop request budget', async t => {
+  const f = clockedHistoryFixture(t);
+  let settled = false;
+  const load = f.client.ensureCompleteHistory().finally(() => { settled = true; });
+  const request = f.messages[0];
+  assert.equal(request.method, 'thread-follower-load-complete-history'); assert.equal(request.timeoutMs, 305000);
+  t.mock.timers.tick(65000); await Promise.resolve();
+  assert.equal(settled, false); assert.equal(f.client._pending.size, 1);
+  f.snapshot(); f.reply();
+  assert.equal(await load, f.client.state);
+  assert.equal(f.messages.length, 1); assert.equal(f.client._pending.size, 0); assert.equal(f.client._historyLoad, null);
+});
+
+test('the default history RPC expires at 305 seconds without another load request', async t => {
+  const f = clockedHistoryFixture(t);
+  const rejected = assert.rejects(f.client.ensureCompleteHistory(), { code: 'HISTORY_TIMEOUT', outcomeUnknown: false });
+  t.mock.timers.tick(305000); await rejected;
+  assert.equal(f.messages.length, 1); assert.equal(f.client._pending.size, 0); assert.equal(f.client._historyLoad, null);
+  assert.equal(f.client.listenerCount('state'), 0); assert.equal(f.client.listenerCount('status'), 0);
+});
+
+test('a late history reply gets at most thirty seconds to publish its revision within the total bound', async t => {
+  const f = clockedHistoryFixture(t);
+  let settled = false;
+  const load = f.client.ensureCompleteHistory().finally(() => { settled = true; });
+  const rejected = assert.rejects(load, { code: 'HISTORY_TIMEOUT', outcomeUnknown: false });
+  t.mock.timers.tick(304999); f.reply(); await Promise.resolve();
+  t.mock.timers.tick(29999); await Promise.resolve();
+  assert.equal(settled, false);
+  t.mock.timers.tick(1); await rejected;
+  assert.equal(f.messages.filter(message => message.type === 'request').length, 1);
+  assert(f.messages.filter(message => message.params?.following).length <= 3);
+  assert.equal(f.client._pending.size, 0); assert.equal(f.client._historyLoad, null);
+  assert.equal(f.client.listenerCount('state'), 0); assert.equal(f.client.listenerCount('status'), 0);
 });
 
 test('history loads once through the original owner and accepts state that arrives before its reply', async t => {

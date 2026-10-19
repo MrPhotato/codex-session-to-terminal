@@ -62,7 +62,7 @@ export function nativeTerminalError(error, locale = systemLocale()) {
     ABORTED: ['Codex Session to Terminal 终端连接已关闭。桌面任务会继续运行。', 'The terminal connection is closed. The Desktop task continues.'],
     UNSUPPORTED_VERSION: ['当前桌面通信版本尚不兼容，请更新 Codex Session to Terminal 后重试。', 'This Desktop protocol version is not supported. Update Codex Session to Terminal and retry.'],
     SNAPSHOT_TIMEOUT: ['同步会话超时，请在桌面端打开该聊天后重试。', 'Chat synchronization timed out. Open this chat in Desktop and retry.'],
-    HISTORY_TIMEOUT: ['完整历史加载超时，请在桌面端打开该聊天后重试。', 'Loading the complete chat history timed out. Open this chat in Desktop and retry.'],
+    HISTORY_TIMEOUT: ['完整历史加载超时。请保持桌面端这条聊天打开，稍后重新连接。', 'Loading the complete chat history timed out. Keep this chat open in Desktop and reconnect shortly.'],
     HISTORY_LOAD_IN_PROGRESS: ['会话历史仍在加载，请稍后重新打开终端。', 'Chat history is still loading. Reopen the terminal shortly.'],
     OWNER_UNAVAILABLE: ['找不到当前会话，请在桌面端打开该聊天后重试。', 'The current chat is unavailable. Open it in Desktop and retry.'],
     NO_OWNER: ['桌面端尚未加载这条会话，请先打开它再连接。', 'Desktop has not loaded this chat. Open it before connecting.'],
@@ -211,6 +211,9 @@ export async function main(args = process.argv.slice(2)) {
   try {
     const options = parseNativeArguments(args);
     if (!options.check && !interactive) throw failure('TERMINAL_REQUIRED');
+    if (interactive && !options.check) process.stderr.write(isChinese(locale)
+      ? '正在连接桌面会话并读取完整历史。长会话首次加载可能需要几分钟；Ctrl+C 可取消。\n'
+      : 'Connecting to the Desktop chat and loading its full history. Long chats may take a few minutes on first load; Ctrl+C cancels.\n');
     process.exitCode = await runNativeTerminal(options);
     if (options.check) process.stdout.write(isChinese(locale) ? 'Codex Session to Terminal 官方 CLI 连接检查通过。\n' : 'Codex Session to Terminal official CLI connection check passed.\n');
   } catch (error) {

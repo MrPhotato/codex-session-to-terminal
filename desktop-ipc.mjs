@@ -9,6 +9,11 @@ const VERSIONS = Object.freeze({ initialize: 0, 'thread-owner-discovery': 1,
   'thread-follower-start-turn': 2, 'thread-follower-steer-turn': 1,
   'thread-follower-interrupt-turn': 4, 'thread-follower-load-complete-history': 1 });
 const FOLLOWER_WRITES = new Set(['thread-follower-start-turn', 'thread-follower-steer-turn', 'thread-follower-interrupt-turn']);
+// Desktop allows its owner 300 seconds to hydrate all history, waits 305
+// seconds for that RPC, then allows another 30 seconds for the returned revision.
+const HISTORY_REQUEST_TIMEOUT_MS = 305000;
+const HISTORY_REVISION_TIMEOUT_MS = 30000;
+const HISTORY_TIMEOUT_MS = HISTORY_REQUEST_TIMEOUT_MS + HISTORY_REVISION_TIMEOUT_MS;
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -414,8 +419,8 @@ export class DesktopIpcClient extends EventEmitter {
   }
 
   /** Load history through the existing owner, then wait for its authoritative state. */
-  async ensureCompleteHistory({ timeoutMs = 60000, signal } = {}) {
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 305000) throw new TypeError('Invalid history timeoutMs.');
+  async ensureCompleteHistory({ timeoutMs = HISTORY_TIMEOUT_MS, signal } = {}) {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > HISTORY_TIMEOUT_MS) throw new TypeError('Invalid history timeoutMs.');
     if (signal && (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) throw new TypeError('Invalid history AbortSignal.');
     if (signal?.aborted) throw failure('ABORTED', 'History loading was cancelled.');
     if (this._closed || !this._status.ready || !this._owner) throw failure('NOT_READY', 'Wait for a current Desktop snapshot before loading history.');
@@ -425,10 +430,10 @@ export class DesktopIpcClient extends EventEmitter {
     const operation = {}, requestAbort = new AbortController();
     this._historyLoad = operation;
     return new Promise((resolve, reject) => {
-      let settled = false, targetRevision = null, retryTimer = null, attempts = 0;
+      let settled = false, targetRevision = null, retryTimer = null, revisionTimer = null, attempts = 0;
       const finish = (error) => {
         if (settled) return;
-        settled = true; clearTimeout(timer); clearTimeout(retryTimer);
+        settled = true; clearTimeout(timer); clearTimeout(retryTimer); clearTimeout(revisionTimer);
         this.off('state', check); this.off('status', checkStatus);
         signal?.removeEventListener('abort', abort);
         requestAbort.abort();
@@ -454,15 +459,20 @@ export class DesktopIpcClient extends EventEmitter {
       this.on('state', check); this.on('status', checkStatus);
       signal?.addEventListener('abort', abort, { once: true });
       // Loading is requested once. Only the read-only snapshot subscription may
-      // be repeated if its revision has not arrived; the deadline never moves.
+      // be repeated if its revision has not arrived. The fixed overall deadline
+      // also honors callers that supply a shorter timeout than Desktop's budget.
       this._request('thread-follower-load-complete-history', { conversationId: this._threadId },
-        { target: owner, timeoutMs, signal: requestAbort.signal }).then(response => {
+        { target: owner, timeoutMs: Math.min(timeoutMs, HISTORY_REQUEST_TIMEOUT_MS), signal: requestAbort.signal }).then(response => {
         if (settled) return;
         if (!revision(response.result?.revision)) { finish(failure('PROTOCOL_ERROR', 'Desktop returned an invalid history revision.')); return; }
         targetRevision = response.result.revision;
         check();
-        if (!settled) retryTimer = setTimeout(requestSnapshot, this.options.snapshotRetryMs);
-      }, finish);
+        if (!settled) {
+          revisionTimer = setTimeout(() => finish(failure('HISTORY_TIMEOUT', 'Desktop did not publish the complete history revision before the deadline.')), HISTORY_REVISION_TIMEOUT_MS);
+          retryTimer = setTimeout(requestSnapshot, this.options.snapshotRetryMs);
+        }
+      }, error => finish(error.code === 'REQUEST_TIMEOUT'
+        ? failure('HISTORY_TIMEOUT', 'Desktop did not finish loading history before the deadline.') : error));
     });
   }
 
