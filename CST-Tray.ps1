@@ -112,7 +112,7 @@ function Invoke-CstTerminal {
     if ([CodexSharedSession.ClipboardLinkListener]::ForegroundProcessId() -ne $DesktopPid) { return }
     $sourceWindow = [CodexSharedSession.TerminalWindows]::Foreground()
     $beforeHandles = @([CodexSharedSession.TerminalWindows]::Snapshot() | ForEach-Object Handle)
-    $windowTitle = 'CST ' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    $windowTitle = 'Codex Session to Terminal ' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
     $powerShellPath = Join-Path $PSHOME 'pwsh.exe'
     $nodeArguments = @(Get-CstTerminalArguments -ThreadId $ThreadId -ControlDirectory $ControlDirectory -PowerShellPath $powerShellPath -BackendPath $BackendPath)
     $terminal = Get-Command wt.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -141,7 +141,7 @@ function Invoke-CstTerminal {
 
 function Start-CstTray {
     param([Parameter(Mandatory)][string]$NodeExecutable)
-    if (!$IsWindows -or [Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { throw 'Start CST with PowerShell 7 -STA on Windows.' }
+    if (!$IsWindows -or [Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { throw 'Start Codex Session to Terminal with PowerShell 7 -STA on Windows.' }
     $instance = $null; $listener = $null; $tray = $null; $icon = $null; $menu = $null; $panel = $null; $heartbeat = $null; $runDirectory = $null
     $state = @{ Exit = $false; Desktop = $null; LastThread = ''; LastLaunch = [DateTime]::MinValue; Text = $null }
     try {
@@ -149,7 +149,7 @@ function Start-CstTray {
         if (!$instance.OwnsMutex) { return }
         # Only the owner loads native UI/listener code. Repeated double-clicks
         # signal its panel immediately instead of compiling another tray process.
-        if (!(Test-Path -LiteralPath $NodeExecutable -PathType Leaf)) { throw 'The CST Node.js runtime is missing.' }
+        if (!(Test-Path -LiteralPath $NodeExecutable -PathType Leaf)) { throw 'The Codex Session to Terminal Node.js runtime is missing.' }
         . (Join-Path $PSScriptRoot 'Thread-Link.ps1')
         . (Join-Path $PSScriptRoot 'Terminal-Focus.ps1')
         . (Join-Path $PSScriptRoot 'CST-Panel.ps1')
@@ -169,20 +169,14 @@ function Start-CstTray {
         $state.Text = Get-CstInterfaceText -Chinese $chinese
         $panel = [CodexSessionToTerminal.SessionPanel]::new((Join-Path $PSScriptRoot 'assets\icon.ico'))
         Update-CstPanel -Panel $panel -Rows @() -Dark ([CodexSessionToTerminal.SystemAppearance]::IsDark()) -Chinese $chinese
-        $menu = [Windows.Forms.ContextMenuStrip]::new()
-        $sessionsItem = $menu.Items.Add($state.Text.Sessions)
-        $sessionsItem.add_Click({ $panel.ShowPanel() })
-        [void]$menu.Items.Add([Windows.Forms.ToolStripSeparator]::new())
-        $statusItem = $menu.Items.Add($state.Text.Waiting); $statusItem.Enabled = $false
-        $hintItem = $menu.Items.Add($state.Text.Hint); $hintItem.Enabled = $false
-        [void]$menu.Items.Add([Windows.Forms.ToolStripSeparator]::new())
-        $legacyItem = $menu.Items.Add($state.Text.Legacy)
-        $legacyItem.add_Click({
+        $menu = [CodexSessionToTerminal.TrayMenu]::new()
+        $menu.UpdateAppearance([CodexSessionToTerminal.SystemAppearance]::IsDark(), $chinese, $false)
+        $menu.SessionsItem.add_Click({ $panel.ShowPanel() })
+        $menu.LegacyItem.add_Click({
             # Reveal the fallback; never invoke it or restart Desktop from the tray.
             Start-Process -FilePath explorer.exe -ArgumentList @('/select,', ('"' + (Join-Path $PSScriptRoot 'Start.cmd') + '"')) -WindowStyle Normal | Out-Null
         })
-        $exitItem = $menu.Items.Add($state.Text.Exit)
-        $exitItem.add_Click({ $state.Exit = $true })
+        $menu.ExitItem.add_Click({ $state.Exit = $true })
         $tray = [Windows.Forms.NotifyIcon]::new()
         $icon = [Drawing.Icon]::new((Join-Path $PSScriptRoot 'assets\icon.ico'))
         $tray.Icon = $icon; $tray.ContextMenuStrip = $menu; $tray.Text = $state.Text.TooltipWaiting; $tray.Visible = $true
@@ -207,7 +201,7 @@ function Start-CstTray {
                 if ($current.StartTime.ToUniversalTime().Ticks -ne $state.Desktop.StartTicks) { return }
                 Invoke-CstTerminal -ThreadId $thread -ControlDirectory $runDirectory -NodeExecutable $NodeExecutable -DesktopPid $state.Desktop.Id -BackendPath $state.Desktop.BackendPath
             }
-            catch { $tray.ShowBalloonTip(4000, 'CST', $state.Text.OpenFailed, [Windows.Forms.ToolTipIcon]::Warning) }
+            catch { $tray.ShowBalloonTip(4000, 'Codex Session to Terminal', $state.Text.OpenFailed, [Windows.Forms.ToolTipIcon]::Warning) }
         }
         $nextCheck = [DateTime]::MinValue
         while (!$state.Exit -and !(Test-Path -LiteralPath (Join-Path $runDirectory 'stop.flag'))) {
@@ -224,9 +218,7 @@ function Start-CstTray {
                 }
                 $chinese = [CodexSessionToTerminal.SystemAppearance]::UiLanguage().StartsWith('zh', [StringComparison]::OrdinalIgnoreCase)
                 $state.Text = Get-CstInterfaceText -Chinese $chinese
-                $sessionsItem.Text = $state.Text.Sessions; $hintItem.Text = $state.Text.Hint
-                $legacyItem.Text = $state.Text.Legacy; $exitItem.Text = $state.Text.Exit
-                $statusItem.Text = if ($desktop) { $state.Text.Ready } else { $state.Text.Waiting }
+                $menu.UpdateAppearance([CodexSessionToTerminal.SystemAppearance]::IsDark(), $chinese, [bool]$desktop)
                 $tray.Text = if ($desktop) { $state.Text.TooltipReady } else { $state.Text.TooltipWaiting }
                 Update-CstPanel -Panel $panel -Rows @(Get-CstSessionRows -ControlDirectory $runDirectory) -Dark ([CodexSessionToTerminal.SystemAppearance]::IsDark()) -Chinese $chinese
                 $nextCheck = [DateTime]::UtcNow.AddSeconds(2)
@@ -251,7 +243,7 @@ if (!$DefinitionsOnly) {
     try { Start-CstTray -NodeExecutable $NodePath }
     catch {
         Add-Type -AssemblyName System.Windows.Forms
-        $message = 'CST could not start. Check that its files and runtimes are installed correctly.'
+        $message = 'Codex Session to Terminal could not start. Check that its files and runtimes are installed correctly.'
         if (Get-Command Get-CstInterfaceText -ErrorAction SilentlyContinue) {
             $language = if ('CodexSessionToTerminal.SystemAppearance' -as [type]) { [CodexSessionToTerminal.SystemAppearance]::UiLanguage() } else { [Globalization.CultureInfo]::CurrentUICulture.Name }
             $message = (Get-CstInterfaceText -Chinese $language.StartsWith('zh', [StringComparison]::OrdinalIgnoreCase)).StartFailed

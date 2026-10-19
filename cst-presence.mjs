@@ -22,7 +22,7 @@ export function createSessionPresence({ controlDirectory, threadId, instanceId =
   clearIntervalFn = clearInterval, retryDelay = sleep } = {}) {
   if (!isAbsolute(controlDirectory ?? '') || !UUID.test(threadId ?? '') || !UUID.test(instanceId ?? '') ||
     !Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(heartbeatMs) || heartbeatMs < 1) {
-    throw new TypeError('Invalid CST session presence options.');
+    throw new TypeError('Invalid Codex Session to Terminal session presence options.');
   }
   const directory = join(controlDirectory, 'sessions');
   const filePath = join(directory, `${instanceId}.json`);

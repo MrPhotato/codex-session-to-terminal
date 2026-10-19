@@ -96,6 +96,6 @@ public static class CstVerifiedPipe {
 '@
     [void][CstVerifiedPipe]::Run([string[]]$allowed).GetAwaiter().GetResult()
 } catch {
-    [Console]::Error.WriteLine('CST Desktop connection failed: ' + $_.Exception.Message)
+    [Console]::Error.WriteLine('Codex Session to Terminal Desktop connection failed: ' + $_.Exception.Message)
     exit 1
 }

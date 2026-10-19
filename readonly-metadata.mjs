@@ -36,7 +36,7 @@ export function createMetadataReader(backendPath, { timeoutMs = 30000, env = pro
       let message;
       try { message = JSON.parse(line); } catch { fail('Invalid metadata response.'); child.kill(); return; }
       if (message.method && message.id !== undefined) {
-        if (!closed) child.stdin.write(JSON.stringify({ id: message.id, error: { code: -32601, message: 'The read-only CST metadata helper does not handle server requests.' } }) + '\n');
+        if (!closed) child.stdin.write(JSON.stringify({ id: message.id, error: { code: -32601, message: 'The read-only Codex Session to Terminal metadata helper does not handle server requests.' } }) + '\n');
       } else if (message.id !== undefined) {
         const item = pending.get(message.id);
         if (!item) continue;

@@ -46,7 +46,7 @@ export function renderScreen(view, { columns = 80, rows = 24, draft = '', caret 
   const inputLines = wrapText(beforeCaret + '┃' + draftChars.slice(caret).join(''), width);
   const caretLine = wrapText(beforeCaret + '┃', width).length - 1;
   const input = inputLines.slice(Math.max(0, caretLine - 3), Math.max(4, caretLine + 1));
-  const top = [wrapText(`CST · ${view.title || '当前聊天'} · ${view.activeTurnId ? '运行中' : '空闲'}`, width)[0], wrapText(status, width)[0]];
+  const top = [wrapText(`Codex Session to Terminal · ${view.title || '当前聊天'} · ${view.activeTurnId ? '运行中' : '空闲'}`, width)[0], wrapText(status, width)[0]];
   const help = 'Enter 发送/补充 · Ctrl+Enter 或 Tab 排队 · Ctrl+J 换行 · Ctrl+C 退出';
   const bottom = [wrapText(notice || (view.pendingInput ? '需要审批或补充信息，请在 ChatGPT 中处理。' : 'PgUp/PgDn 浏览 · Ctrl+R 重连 · Ctrl+U 清空'), width)[0], ...input,
     wrapText(busy ? '正在提交，请稍候…' : help, width)[0]];
@@ -102,7 +102,7 @@ export function keyAction(key = {}, pasted = false) {
 export function parseArguments(args) {
   const values = {};
   for (let i = 0; i < args.length; i += 2) {
-    if (!['--thread', '--control-directory', '--powershell-path', '--backend-path', '--smoke-ms'].includes(args[i]) || !args[i + 1] || values[args[i]]) throw new Error('Invalid CST terminal arguments.');
+    if (!['--thread', '--control-directory', '--powershell-path', '--backend-path', '--smoke-ms'].includes(args[i]) || !args[i + 1] || values[args[i]]) throw new Error('Invalid Codex Session to Terminal arguments.');
     values[args[i]] = args[i + 1];
   }
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(values['--thread'] ?? '')) throw new Error('A local thread ID is required.');
@@ -116,10 +116,10 @@ export async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args), threadId = options['--thread'];
   const smokeMs = Math.min(20000, Number(options['--smoke-ms'] || 0));
   const interactive = !smokeMs;
-  if (interactive && (!process.stdin.isTTY || !process.stdout.isTTY)) throw new Error('CST needs an interactive terminal.');
-  if (interactive && !options['--control-directory']) throw new Error('Start the terminal from the CST tray.');
+  if (interactive && (!process.stdin.isTTY || !process.stdout.isTTY)) throw new Error('Codex Session to Terminal needs an interactive terminal.');
+  if (interactive && !options['--control-directory']) throw new Error('Start the terminal from the Codex Session to Terminal tray.');
   const lease = options['--control-directory'] ? createTrayLease(options['--control-directory']) : () => true;
-  if (!lease()) throw new Error('The CST tray is no longer running.');
+  if (!lease()) throw new Error('The Codex Session to Terminal tray is no longer running.');
   const presence = options['--control-directory'] ? createSessionPresence({ controlDirectory: options['--control-directory'], threadId }) : null;
   let client, draft = '', pasteBuffer = '', deferredPaste = '', caret = 0, notice = '', status = '连接中…', offset = 0, busy = false, closed = false, pasted = false, renderTimer, updates = 0, connected = false, connecting = false;
   let view = { messages: [], activeTurnId: null };
@@ -142,7 +142,7 @@ export async function main(args = process.argv.slice(2)) {
       current = client = new DesktopIpcClient({
         transportFactory: verifiedDesktopTransport(options['--powershell-path']),
         queueSender: queueSender ? request => {
-          if (closed || !lease()) throw new Error('The CST tray is no longer running.');
+          if (closed || !lease()) throw new Error('The Codex Session to Terminal tray is no longer running.');
           return queueSender(request);
         } : undefined,
       });

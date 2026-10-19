@@ -395,7 +395,7 @@ export class DesktopIpcClient extends EventEmitter {
       const response = await this._request(`thread-follower-${action}-turn`, params, { target: owner, write: true });
       const result = response.result?.result;
       if (!(action === 'start' ? id(result?.turn?.id) : id(result?.turnId))) {
-        throw failure('DELIVERY_UNCONFIRMED', '发送结果未确认。请先在 ChatGPT 检查当前会话，避免重复发送；CST 没有重试。', true);
+        throw failure('DELIVERY_UNCONFIRMED', '发送结果未确认。请先在 ChatGPT 检查当前会话，避免重复发送；Codex Session to Terminal 没有重试。', true);
       }
       return { action, clientUserMessageId: messageId, result };
     } finally { this._sending = false; }

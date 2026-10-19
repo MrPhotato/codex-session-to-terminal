@@ -167,7 +167,7 @@ export async function createNativeCliBridge({ backendPath, powershellPath, threa
               if (socket.readyState === 1) socket.send(JSON.stringify(notification));
             });
             projector.stop = () => {
-              if (socket.readyState === 1) socket.send(JSON.stringify({ method: 'warning', params: { threadId, message: 'CST could not preserve the official event contract. Reconnect this terminal to refresh the Desktop snapshot. No message was retried.' } }));
+              if (socket.readyState === 1) socket.send(JSON.stringify({ method: 'warning', params: { threadId, message: 'Codex Session to Terminal could not preserve the official event contract. Reconnect this terminal to refresh the Desktop snapshot. No message was retried.' } }));
               socket.close(1011, 'The Desktop event projection must be resynchronized.');
             };
             projector.seed(baseline); projectors.add(projector); projector.pendingRequests(baseline);

@@ -16,7 +16,7 @@ Set-StrictMode -Version Latest
 # .git, and a developer's node_modules are not part of the installer payload.
 $sourceFiles = @(
     'Start-CST.cmd', 'Start-CST.ps1', 'CST-Tray.ps1', 'desktop-pipe-proxy.ps1',
-    'CST-Panel.ps1', 'CST-Panel.cs', 'CST-Presence.ps1', 'cst-presence.mjs',
+    'CST-Panel.ps1', 'CST-Panel.cs', 'CST-TrayMenu.cs', 'CST-Presence.ps1', 'cst-presence.mjs',
     'desktop-ipc.mjs', 'cst-transport.mjs', 'cst-state.mjs', 'cst-queue.mjs', 'cst-terminal.mjs', 'LEGACY.md',
     'cst-native-terminal.mjs', 'native-cli-bridge.mjs', 'readonly-metadata.mjs',
     'desktop-control.mjs', 'desktop-events.mjs', 'snapshot-history.mjs', 'protocol-validation.mjs',

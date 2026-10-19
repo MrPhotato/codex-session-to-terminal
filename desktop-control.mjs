@@ -72,11 +72,11 @@ export function createDesktopController(desktop, threadId) {
         try {
           counts[method] = (counts[method] ?? 0) + 1;
           const response = await desktop.requestFollower('thread-follower-interrupt-turn', { conversationId: threadId, mode: 'user-stop', expectedTurnId: activeTurnId });
-          if (response.result?.ok !== true && response.result?.result?.ok !== true) throw fault('The Desktop interrupt outcome is unconfirmed; CST did not retry.');
+          if (response.result?.ok !== true && response.result?.result?.ok !== true) throw fault('The Desktop interrupt outcome is unconfirmed; Codex Session to Terminal did not retry.');
           return {};
         } catch (cause) {
           if (cause.rpcError) throw cause;
-          throw fault('The Desktop interrupt result is unconfirmed. Check Desktop before trying again; CST did not retry.');
+          throw fault('The Desktop interrupt result is unconfirmed. Check Desktop before trying again; Codex Session to Terminal did not retry.');
         } finally { pending = false; }
       }
       if (!['turn/start', 'turn/steer'].includes(method)) throw fault('This Desktop control command is not implemented.', -32601);
@@ -106,12 +106,12 @@ export function createDesktopController(desktop, threadId) {
         counts[method] = (counts[method] ?? 0) + 1;
         const response = await desktop.requestFollower(ipcMethod, ipcParams);
         const result = response.result?.result;
-        if (!(method === 'turn/start' ? validId(result?.turn?.id) : validId(result?.turnId))) throw fault('The Desktop delivery result is unconfirmed. Check Desktop before sending again; CST did not retry.');
-        if (method === 'turn/steer' && result.turnId !== activeTurnId) throw fault('The Desktop accepted a different active turn. Check Desktop before sending again; CST did not retry.');
+        if (!(method === 'turn/start' ? validId(result?.turn?.id) : validId(result?.turnId))) throw fault('The Desktop delivery result is unconfirmed. Check Desktop before sending again; Codex Session to Terminal did not retry.');
+        if (method === 'turn/steer' && result.turnId !== activeTurnId) throw fault('The Desktop accepted a different active turn. Check Desktop before sending again; Codex Session to Terminal did not retry.');
         return result;
       } catch (cause) {
         if (cause.rpcError) throw cause;
-        throw fault('The Desktop delivery result is unconfirmed. Check Desktop before sending again; CST did not retry.');
+        throw fault('The Desktop delivery result is unconfirmed. Check Desktop before sending again; Codex Session to Terminal did not retry.');
       } finally { pending = false; }
     },
   };

@@ -13,7 +13,7 @@ function Invoke-InstallerProcess([string]$Path, [string]$LogName, [string[]]$Ext
     return $process.ExitCode
 }
 if ((Invoke-InstallerProcess $InstallerPath 'install.log' @('/TASKS="desktopicon"')) -ne 0) { throw 'Silent installation failed.' }
-foreach ($relative in @('Start.cmd','Start-CST.cmd','CST-Tray.ps1','CST-Panel.ps1','CST-Panel.cs','CST-Presence.ps1','cst-presence.mjs','desktop-pipe-proxy.ps1','desktop-ipc.mjs','cst-terminal.mjs','LEGACY.md','Dependencies.ps1','runtime\node\node.exe','runtime\powershell\pwsh.exe','runtime\node\LICENSE','runtime\powershell\LICENSE.txt','runtime\powershell\ThirdPartyNotices.txt','licenses\INNO-SETUP-LICENSE.txt','unins000.exe')) {
+foreach ($relative in @('Start.cmd','Start-CST.cmd','CST-Tray.ps1','CST-Panel.ps1','CST-Panel.cs', 'CST-TrayMenu.cs','CST-Presence.ps1','cst-presence.mjs','desktop-pipe-proxy.ps1','desktop-ipc.mjs','cst-terminal.mjs','LEGACY.md','Dependencies.ps1','runtime\node\node.exe','runtime\powershell\pwsh.exe','runtime\node\LICENSE','runtime\powershell\LICENSE.txt','runtime\powershell\ThirdPartyNotices.txt','licenses\INNO-SETUP-LICENSE.txt','unins000.exe')) {
     if (!(Test-Path -LiteralPath (Join-Path $app $relative) -PathType Leaf)) { throw "Installed file is missing: $relative" }
 }
 if ((Test-Path -LiteralPath (Join-Path $app 'node_modules')) -or (Test-Path -LiteralPath $privateRoot)) { throw 'Installation unexpectedly initialized dependencies or private state.' }
@@ -27,7 +27,7 @@ foreach ($link in $links) {
     $shortcut = $shell.CreateShortcut($link)
     if ($shortcut.TargetPath -ine (Join-Path $app 'Start-CST.cmd')) { throw 'Shortcut does not target the independent entry point.' }
 }
-foreach ($entry in @(@('CST - Independent','Start-CST.cmd'),@('CST - Legacy Shared Startup','Start.cmd'))) {
+foreach ($entry in @(@('Codex Session to Terminal - Independent','Start-CST.cmd'),@('Codex Session to Terminal - Legacy Shared Startup','Start.cmd'))) {
     $link = Join-Path ([Environment]::GetFolderPath('Programs')) ('Codex Session to Terminal\' + $entry[0] + '.lnk')
     $links += $link
     if (!(Test-Path -LiteralPath $link) -or $shell.CreateShortcut($link).TargetPath -ine (Join-Path $app $entry[1])) { throw 'Independent or rollback entry is missing.' }

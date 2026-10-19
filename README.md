@@ -2,7 +2,7 @@
 
 <img src="assets/icon.png" width="128" alt="Codex Session to Terminal icon" />
 
-在 Windows 上，为已经运行的 ChatGPT 本地 Work / Codex 聊天打开实时终端。CST 独立驻留系统托盘，退出后 ChatGPT 继续工作。
+在 Windows 上，为已经运行的 ChatGPT 本地 Work / Codex 聊天打开实时终端。Codex Session to Terminal 独立驻留系统托盘，退出后 ChatGPT 继续工作。
 
 **0.2 Preview · Windows x64 · 非官方集成。** 新版通过 Desktop 已有的本机通信通道跟随当前会话，不修改官方程序、快捷方式或启动参数，不需要重启 ChatGPT。检查通信能力和协议格式，不锁定 Desktop 的完整版本号。
 
@@ -11,19 +11,19 @@
 ## 使用独立模式
 
 1. 像平常一样打开 ChatGPT。
-2. 双击 `Start-CST.cmd`，或开始菜单的 **CST - Independent**。CST 打开会话面板、驻留系统托盘，并发出一次启动通知；再次打开会显示已有实例的面板。
+2. 双击 `Start-CST.cmd`，或开始菜单的 **Codex Session to Terminal - Independent**。Codex Session to Terminal 打开会话面板、驻留系统托盘，并发出一次启动通知；再次打开会显示已有实例的面板。
 3. 在已有键盘焦点的本地 Work / Codex 聊天按 **Ctrl+Alt+L**，用官方 Codex CLI 打开同一条聊天。输入前点击终端。
 4. 单击托盘图标查看终端会话面板。关闭面板会收回托盘。
-5. 右键托盘图标选择 **退出 CST / Exit CST**，断开本轮所有 CST 终端；ChatGPT 和已接受的任务继续运行。
+5. 右键托盘图标选择 **退出 / Exit**，断开本轮所有终端；ChatGPT 和已接受的任务继续运行。
 
-会话面板仅显示当前这轮 CST 打开的终端会话，展示实际连接状态和是否有任务运行。同一聊天打开多个终端时合并显示数量。关闭终端后自动移除，失去心跳的连接不会继续显示为已连接。面板的深浅色跟随 Windows 应用主题，中英文跟随 Windows 显示语言（其他语言使用英文），没有额外切换按钮。启动通知遵循 Windows 的通知和勿扰设置。
+会话面板仅显示本轮打开的终端会话，展示实际连接状态和是否有任务运行。同一聊天打开多个终端时合并显示数量。关闭终端后自动移除，失去心跳的连接不会继续显示为已连接。面板和托盘菜单的深浅色跟随 Windows 应用主题，中英文跟随 Windows 显示语言（其他语言使用英文），没有额外切换按钮。托盘菜单显示完整产品名称、ChatGPT 是否已打开及快捷键提示，并提供查看会话、查看原版入口和退出三个操作。启动通知遵循 Windows 的通知和勿扰设置。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/session-panel-dark.png">
-  <img src="assets/session-panel-light.png" width="760" alt="CST 终端会话面板，展示示例会话的连接与运行状态">
+  <img src="assets/session-panel-light.png" width="760" alt="Codex Session to Terminal 终端会话面板，展示示例会话的连接与运行状态">
 </picture>
 
-CST 使用 ChatGPT 自带的“复制聊天链接”快捷键。它仅在官方 Desktop 位于前台时处理新复制的本地链接；不会监听其他应用的聊天内容，也不会保存剪贴板。
+Codex Session to Terminal 使用 ChatGPT 自带的“复制聊天链接”快捷键。它仅在官方 Desktop 位于前台时处理新复制的本地链接；不会监听其他应用的聊天内容，也不会保存剪贴板。
 
 | 终端操作 | 行为 |
 | --- | --- |
@@ -33,7 +33,7 @@ CST 使用 ChatGPT 自带的“复制聊天链接”快捷键。它仅在官方 
 | CLI 的历史浏览与输入快捷键 | 沿用官方 CLI 操作 |
 | Ctrl+C 或 `/quit` | 退出这个 CLI；任务运行时先留意 CLI 的中断提示 |
 
-部分 Windows 终端会把 Ctrl+Enter 编码成普通 Enter，这时请用 **Tab** 排队。Tab 已实测；Ctrl+Enter 已在本次 CLI 进程配置，实际按键取决于终端。CST 不修改你的全局终端快捷键。排队由这个 CLI 管理，关闭该终端会丢弃尚未发送的队列；Desktop 已接受的任务继续运行。发送结果不明确时请检查桌面，CST 不自动重放消息。
+部分 Windows 终端会把 Ctrl+Enter 编码成普通 Enter，这时请用 **Tab** 排队。Tab 已实测；Ctrl+Enter 已在本次 CLI 进程配置，实际按键取决于终端。Codex Session to Terminal 不修改你的全局终端快捷键。排队由这个 CLI 管理，关闭该终端会丢弃尚未发送的队列；Desktop 已接受的任务继续运行。发送结果不明确时请检查桌面，Codex Session to Terminal 不自动重放消息。
 
 终端使用未修改的官方 Codex CLI。支持历史显示、运行中接入、双向文本消息、补充、排队、工具输出和中断。长聊天需要先由 Desktop 加载完整历史；无法取得完整快照时明确报错，不显示不完整历史冒充成功。审批、附件、模型切换、插件交互和未接入的原生命令仍在 Desktop 处理。云端聊天、远程主机及 SSH 任务不在本版范围内。
 
@@ -41,11 +41,11 @@ CST 使用 ChatGPT 自带的“复制聊天链接”快捷键。它仅在官方 
 
 原有 `Start.cmd`、`Enable-Normal-Desktop.cmd`、共享连接配置及官方 CLI 方案均保留。独立模式和旧方案使用不同的运行目录。
 
-1. 右键托盘退出 CST。
+1. 右键托盘退出 Codex Session to Terminal。
 2. 等当前任务结束，再由你正常退出 ChatGPT。
-3. 打开 **CST - Legacy Shared Startup** 或原有 `Start.cmd` / `Enable-Normal-Desktop.cmd`。
+3. 打开 **Codex Session to Terminal - Legacy Shared Startup** 或原有 `Start.cmd` / `Enable-Normal-Desktop.cmd`。
 
-旧方案需要由 CST 启动共享后台，因此要求先退出普通启动的 ChatGPT；它不会强行关闭应用。完整说明见 [LEGACY.md](LEGACY.md)。托盘的 **查看原版启动入口 / Show legacy startup files** 可以找到回退入口，不会替你重启 ChatGPT。
+旧方案需要由 Codex Session to Terminal 启动共享后台，因此要求先退出普通启动的 ChatGPT；它不会强行关闭应用。完整说明见 [LEGACY.md](LEGACY.md)。托盘的 **查看原版启动入口 / Show legacy startup files** 可以找到回退入口，不会替你重启 ChatGPT。
 
 从旧版升级时，已有同名快捷方式保持原目标；开始菜单另提供明确的 **Independent** 与 **Legacy Shared Startup** 两个入口。
 
@@ -57,13 +57,13 @@ CST 使用 ChatGPT 自带的“复制聊天链接”快捷键。它仅在官方 
 - `Start-CST.ps1 -Check` 仅检查文件、运行时、依赖和执行策略，不下载依赖、不打开托盘或 ChatGPT。
 - 不设置系统执行策略，不绕过管理员/用户明确配置的 Restricted 或 AllSigned。
 
-安装器不启动或关闭任何应用；当前用户安装，无需管理员权限。卸载保留私有状态及 ChatGPT 账号和聊天历史。首次启动 CST 时下载锁定的官方 CLI 和适配层依赖。
+安装器不启动或关闭任何应用；当前用户安装，无需管理员权限。卸载保留私有状态及 ChatGPT 账号和聊天历史。首次启动 Codex Session to Terminal 时下载锁定的官方 CLI 和适配层依赖。
 
 ## 连接与本地数据
 
-CST 在现有 `codex-ipc` 管道注册自己的客户端身份，发现会话原 owner，再订阅快照与增量。连接前在同一管道句柄上验证服务进程属于当前 Windows 用户及已安装的官方 Desktop 路径。它不声明会话所有权、不独立 resume 正在运行的聊天。
+Codex Session to Terminal 在现有 `codex-ipc` 管道注册自己的客户端身份，发现会话原 owner，再订阅快照与增量。连接前在同一管道句柄上验证服务进程属于当前 Windows 用户及已安装的官方 Desktop 路径。它不声明会话所有权、不独立 resume 正在运行的聊天。
 
-官方 CLI 连接 CST 为本次终端创建的本机 WebSocket，CST 将快照和增量转换成 CLI 使用的官方事件格式。发送、补充和中断交给原 owner；CLI 不会另起同一聊天的执行后台。WebSocket 只绑定本机回环地址，拒绝浏览器 Origin，凭证仅传入这个 CLI 的环境变量，不写入文件或命令行。
+官方 CLI 连接 Codex Session to Terminal 为本次终端创建的本机 WebSocket，Codex Session to Terminal 将快照和增量转换成 CLI 使用的官方事件格式。发送、补充和中断交给原 owner；CLI 不会另起同一聊天的执行后台。WebSocket 只绑定本机回环地址，拒绝浏览器 Origin，凭证仅传入这个 CLI 的环境变量，不写入文件或命令行。
 
 一个隐藏的官方 app-server 辅助进程提供账号、模型、技能和配置等只读元数据。接口白名单禁止它恢复或执行会话，也不通过插件发现接口触发下载。辅助进程可能写入其自身的运行日志或缓存。终端断开后关闭该辅助进程。
 

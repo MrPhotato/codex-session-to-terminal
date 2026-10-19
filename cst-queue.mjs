@@ -43,7 +43,7 @@ export function createQueueSender(backendPath, { spawnBackend = spawn, timeoutMs
         try { message = JSON.parse(line); } catch { fail(new Error('Queue helper returned invalid JSON.')); return; }
         if (message.method && message.id !== undefined) {
           // The helper is never authorized to execute tools or request login.
-          if (!closed) child.stdin.write(JSON.stringify({ id: message.id, error: { code: -32601, message: 'CST queue helper does not handle server requests.' } }) + '\n');
+          if (!closed) child.stdin.write(JSON.stringify({ id: message.id, error: { code: -32601, message: 'Codex Session to Terminal queue helper does not handle server requests.' } }) + '\n');
         } else if (message.id !== undefined) {
           const item = pending.get(message.id);
           if (!item) continue;
@@ -73,7 +73,7 @@ export function createQueueSender(backendPath, { spawnBackend = spawn, timeoutMs
       return { action: 'queue', clientUserMessageId, queuedSubmissionId: result.queuedSubmission.id };
     } catch (error) {
       if (writeAttempted) {
-        const uncertain = new Error('排队结果未确认。请先在桌面检查消息队列，避免重复发送；CST 没有重试。');
+        const uncertain = new Error('排队结果未确认。请先在桌面检查消息队列，避免重复发送；Codex Session to Terminal 没有重试。');
         uncertain.code = 'QUEUE_OUTCOME_UNKNOWN';
         throw uncertain;
       }
@@ -92,7 +92,7 @@ export function createQueueSender(backendPath, { spawnBackend = spawn, timeoutMs
       if (!await waitForExit(1000)) {
         child.kill();
         if (!await waitForExit(1000)) {
-          const error = new Error('排队助手未能退出。请先检查桌面队列，避免重复发送；CST 没有重试。');
+          const error = new Error('排队助手未能退出。请先检查桌面队列，避免重复发送；Codex Session to Terminal 没有重试。');
           error.code = 'QUEUE_HELPER_CLEANUP_FAILED';
           throw error;
         }

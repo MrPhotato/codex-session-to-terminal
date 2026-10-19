@@ -85,7 +85,7 @@ public static class PolicyFixture {
 function Get-SessionBridgePowerShell { '$realPath' }
 function Get-SessionBridgeNode { '$($actualNode.Replace("'", "''"))' }
 "@ | Set-Content -LiteralPath (Join-Path $testRoot 'Discovery.ps1') -Encoding utf8
-    foreach ($name in @('CST-Tray.ps1', 'CST-Panel.ps1', 'CST-Panel.cs', 'CST-Presence.ps1', 'cst-presence.mjs', 'cst-terminal.mjs', 'cst-native-terminal.mjs','native-cli-bridge.mjs','readonly-metadata.mjs','desktop-control.mjs','desktop-events.mjs','snapshot-history.mjs','protocol-validation.mjs','protocol-schema/ServerNotification.json','protocol-schema/v2/ThreadResumeResponse.json','protocol-schema/v2/ThreadTurnsListResponse.json','protocol-schema/v2/ThreadItemsListResponse.json', 'Thread-Link.ps1', 'Terminal-Focus.ps1', 'Watch-Chat-Link.ps1')) {
+    foreach ($name in @('CST-Tray.ps1', 'CST-Panel.ps1', 'CST-Panel.cs', 'CST-TrayMenu.cs', 'CST-Presence.ps1', 'cst-presence.mjs', 'cst-terminal.mjs', 'cst-native-terminal.mjs','native-cli-bridge.mjs','readonly-metadata.mjs','desktop-control.mjs','desktop-events.mjs','snapshot-history.mjs','protocol-validation.mjs','protocol-schema/ServerNotification.json','protocol-schema/v2/ThreadResumeResponse.json','protocol-schema/v2/ThreadTurnsListResponse.json','protocol-schema/v2/ThreadItemsListResponse.json', 'Thread-Link.ps1', 'Terminal-Focus.ps1', 'Watch-Chat-Link.ps1')) {
         $fixturePath = Join-Path $testRoot $name
         [void](New-Item -ItemType Directory -Path (Split-Path -Parent $fixturePath) -Force)
         '# inert test placeholder; must never execute' | Set-Content -LiteralPath $fixturePath

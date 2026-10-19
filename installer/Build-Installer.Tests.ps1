@@ -61,7 +61,7 @@ try {
         throw 'Bundled runtime files were changed.'
     }
     if (!$include.Contains('Start.cmd') -or !$include.Contains('Dependencies.ps1') -or !$include.Contains('Execution-Policy.ps1') -or !$include.Contains('check-startup.mjs')) { throw 'First-start entry files are missing.' }
-    foreach ($newFile in @('Start-CST.cmd','CST-Tray.ps1','CST-Panel.ps1','CST-Panel.cs','CST-Presence.ps1','cst-presence.mjs','desktop-ipc.mjs','desktop-pipe-proxy.ps1','cst-terminal.mjs','cst-state.mjs','cst-transport.mjs','cst-queue.mjs','LEGACY.md')) {
+    foreach ($newFile in @('Start-CST.cmd','CST-Tray.ps1','CST-Panel.ps1','CST-Panel.cs', 'CST-TrayMenu.cs','CST-Presence.ps1','cst-presence.mjs','desktop-ipc.mjs','desktop-pipe-proxy.ps1','cst-terminal.mjs','cst-state.mjs','cst-transport.mjs','cst-queue.mjs','LEGACY.md')) {
         if (!$include.Contains($newFile)) { throw "Independent mode or rollback file missing: $newFile" }
     }
     foreach ($nativeFile in @('cst-native-terminal.mjs','native-cli-bridge.mjs','readonly-metadata.mjs','desktop-control.mjs','desktop-events.mjs','snapshot-history.mjs','protocol-validation.mjs','protocol-schema\ServerNotification.json','protocol-schema\v2\ThreadResumeResponse.json','protocol-schema\v2\ThreadTurnsListResponse.json','protocol-schema\v2\ThreadItemsListResponse.json')) {

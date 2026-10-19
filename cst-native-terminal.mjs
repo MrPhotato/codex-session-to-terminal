@@ -56,24 +56,24 @@ const systemLocale = () => Intl.DateTimeFormat().resolvedOptions().locale;
 const isChinese = locale => /^zh(?:-|$)/i.test(locale);
 export function nativeTerminalError(error, locale = systemLocale()) {
   const messages = {
-    INVALID_ARGUMENTS: ['启动参数无效，请从 CST 托盘重新打开终端。', 'Invalid launch arguments. Reopen the terminal from the CST tray.'],
-    TRAY_STOPPED: ['CST 托盘已退出，终端连接已关闭。桌面任务会继续运行。', 'The CST tray has stopped. The terminal connection is closed; the Desktop task continues.'],
-    TERMINAL_REQUIRED: ['请从 CST 托盘在交互式终端中打开会话。', 'Open this chat in an interactive terminal from the CST tray.'],
-    ABORTED: ['CST 终端连接已关闭。桌面任务会继续运行。', 'The terminal connection is closed. The Desktop task continues.'],
-    UNSUPPORTED_VERSION: ['当前桌面通信版本尚不兼容，请更新 CST 后重试。', 'This Desktop protocol version is not supported. Update CST and retry.'],
+    INVALID_ARGUMENTS: ['启动参数无效，请从 Codex Session to Terminal 托盘重新打开终端。', 'Invalid launch arguments. Reopen the terminal from the Codex Session to Terminal tray.'],
+    TRAY_STOPPED: ['Codex Session to Terminal 托盘已退出，终端连接已关闭。桌面任务会继续运行。', 'The Codex Session to Terminal tray has stopped. The terminal connection is closed; the Desktop task continues.'],
+    TERMINAL_REQUIRED: ['请从 Codex Session to Terminal 托盘在交互式终端中打开会话。', 'Open this chat in an interactive terminal from the Codex Session to Terminal tray.'],
+    ABORTED: ['Codex Session to Terminal 终端连接已关闭。桌面任务会继续运行。', 'The terminal connection is closed. The Desktop task continues.'],
+    UNSUPPORTED_VERSION: ['当前桌面通信版本尚不兼容，请更新 Codex Session to Terminal 后重试。', 'This Desktop protocol version is not supported. Update Codex Session to Terminal and retry.'],
     SNAPSHOT_TIMEOUT: ['同步会话超时，请在桌面端打开该聊天后重试。', 'Chat synchronization timed out. Open this chat in Desktop and retry.'],
     HISTORY_TIMEOUT: ['完整历史加载超时，请在桌面端打开该聊天后重试。', 'Loading the complete chat history timed out. Open this chat in Desktop and retry.'],
     HISTORY_LOAD_IN_PROGRESS: ['会话历史仍在加载，请稍后重新打开终端。', 'Chat history is still loading. Reopen the terminal shortly.'],
     OWNER_UNAVAILABLE: ['找不到当前会话，请在桌面端打开该聊天后重试。', 'The current chat is unavailable. Open it in Desktop and retry.'],
     NO_OWNER: ['桌面端尚未加载这条会话，请先打开它再连接。', 'Desktop has not loaded this chat. Open it before connecting.'],
     FRAME_TOO_LARGE: ['会话数据超出了支持的通信大小，无法打开此终端。', 'The chat data exceeds the supported transport size. This terminal cannot open it.'],
-    CLI_START_FAILED: ['官方 Codex CLI 启动失败，请检查 CST 安装是否完整。', 'The official Codex CLI could not start. Check that the CST installation is complete.'],
+    CLI_START_FAILED: ['官方 Codex CLI 启动失败，请检查 Codex Session to Terminal 安装是否完整。', 'The official Codex CLI could not start. Check that the Codex Session to Terminal installation is complete.'],
     MISSING_CWD: ['会话的工作目录尚未就绪，请在桌面端打开该聊天后重试。', 'The chat working directory is unavailable. Open the chat in Desktop and retry.'],
-    PROTOCOL_SCHEMA_MISMATCH: ['会话数据与官方 CLI 协议不兼容，请更新 CST 后重试。', 'The chat data does not match the official CLI protocol. Update CST and retry.'],
+    PROTOCOL_SCHEMA_MISMATCH: ['会话数据与官方 CLI 协议不兼容，请更新 Codex Session to Terminal 后重试。', 'The chat data does not match the official CLI protocol. Update Codex Session to Terminal and retry.'],
   };
   const safeCode = typeof error?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(error.code) ? error.code : '';
-  const text = (messages[safeCode] ?? ['CST 无法连接当前会话，请确认桌面端已打开该聊天后重试。',
-    'CST could not connect to this chat. Open the chat in Desktop and retry.'])[isChinese(locale) ? 0 : 1];
+  const text = (messages[safeCode] ?? ['Codex Session to Terminal 无法连接当前会话，请确认桌面端已打开该聊天后重试。',
+    'Codex Session to Terminal could not connect to this chat. Open the chat in Desktop and retry.'])[isChinese(locale) ? 0 : 1];
   return safeCode ? `${text} (${safeCode})` : text;
 }
 
@@ -212,7 +212,7 @@ export async function main(args = process.argv.slice(2)) {
     const options = parseNativeArguments(args);
     if (!options.check && !interactive) throw failure('TERMINAL_REQUIRED');
     process.exitCode = await runNativeTerminal(options);
-    if (options.check) process.stdout.write(isChinese(locale) ? 'CST 官方 CLI 连接检查通过。\n' : 'CST official CLI connection check passed.\n');
+    if (options.check) process.stdout.write(isChinese(locale) ? 'Codex Session to Terminal 官方 CLI 连接检查通过。\n' : 'Codex Session to Terminal official CLI connection check passed.\n');
   } catch (error) {
     process.stderr.write(nativeTerminalError(error, locale) + '\n');
     process.exitCode = 1;
