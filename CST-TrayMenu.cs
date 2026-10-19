@@ -111,21 +111,21 @@ namespace CodexSessionToTerminal
             scale = Math.Max(1, Math.Min(4, nextScale));
             SuspendLayout();
             Font previousBody = bodyFont, previousHeading = headingFont, previousSmall = smallFont;
-            bodyFont = new Font(chinese ? "Microsoft YaHei UI" : "Segoe UI", 14 * scale, FontStyle.Regular, GraphicsUnit.Pixel);
-            headingFont = new Font("Segoe UI", 15 * scale, FontStyle.Bold, GraphicsUnit.Pixel);
+            bodyFont = new Font(chinese ? "Microsoft YaHei UI" : "Segoe UI", 13 * scale, FontStyle.Regular, GraphicsUnit.Pixel);
+            headingFont = new Font("Segoe UI", 14 * scale, FontStyle.Bold, GraphicsUnit.Pixel);
             smallFont = new Font(chinese ? "Microsoft YaHei UI" : "Segoe UI", 12 * scale, FontStyle.Regular, GraphicsUnit.Pixel);
             Font = bodyFont;
-            Padding = new Padding(Px(7), Px(10), Px(7), Px(6));
-            int width = Px(340), itemWidth = width - Padding.Horizontal;
-            heading.Size = new Size(itemWidth, Px(29));
-            status.Size = new Size(itemWidth, Px(29));
+            Padding = new Padding(Px(6), Px(8), Px(6), Px(4));
+            int width = Px(280), itemWidth = width - Padding.Horizontal;
+            heading.Size = new Size(itemWidth, Px(25));
+            status.Size = new Size(itemWidth, Px(25));
             heading.Font = headingFont;
             status.Font = smallFont;
             hint.Font = smallFont;
-            hint.Size = new Size(itemWidth, Px(40));
+            hint.Size = new Size(itemWidth, Px(30));
             foreach (ToolStripMenuItem item in new[] { SessionsItem, LegacyItem, ExitItem })
             {
-                item.Size = new Size(itemWidth, Px(40));
+                item.Size = new Size(itemWidth, Px(32));
                 item.Font = bodyFont;
                 item.Padding = Padding.Empty;
                 item.ForeColor = Foreground;
@@ -135,7 +135,7 @@ namespace CodexSessionToTerminal
                 item.Padding = new Padding(Px(9), 0, Px(9), 0);
                 item.ForeColor = item == heading ? Foreground : Muted;
             }
-            separator.Size = new Size(itemWidth, Px(9));
+            separator.Size = new Size(itemWidth, Px(7));
             Size = new Size(width, Padding.Vertical + heading.Height + status.Height + 3 * SessionsItem.Height + separator.Height + hint.Height);
             ResumeLayout(true);
             if (previousBody != null) previousBody.Dispose();
@@ -222,7 +222,7 @@ namespace CodexSessionToTerminal
                 {
                     Color selected = menu.dark ? Color.FromArgb(52, 52, 57) : Color.FromArgb(236, 236, 241);
                     using (Brush brush = new SolidBrush(selected))
-                    using (GraphicsPath path = Rounded(new RectangleF(1, 1, e.Item.Width - 2, e.Item.Height - 2), menu.Px(6)))
+                    using (GraphicsPath path = Rounded(new RectangleF(1, 1, e.Item.Width - 2, e.Item.Height - 2), menu.Px(5)))
                         e.Graphics.FillPath(brush, path);
                 }
                 DrawIcon(e.Graphics, Convert.ToString(e.Item.Tag), e.Item.Height, e.Item.Enabled ? menu.Foreground : menu.Muted);
@@ -243,7 +243,7 @@ namespace CodexSessionToTerminal
             protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
             {
                 string tag = Convert.ToString(e.Item.Tag);
-                int left = menu.Px(tag == "status" ? 24 : e.Item is ToolStripMenuItem ? 44 : 9);
+                int left = menu.Px(tag == "status" ? 24 : e.Item is ToolStripMenuItem ? 38 : 9);
                 Rectangle bounds = new Rectangle(left, 0, e.Item.Width - left - menu.Px(9), e.Item.Height);
                 Color color = tag == "status" || tag == "hint" || !e.Item.Enabled ? menu.Muted : menu.Foreground;
                 TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, bounds, color,
@@ -258,7 +258,7 @@ namespace CodexSessionToTerminal
 
             private void DrawIcon(Graphics graphics, string tag, int rowHeight, Color color)
             {
-                float s = menu.scale, x = 12 * s, y = (rowHeight - 18 * s) / 2;
+                float s = menu.scale * 0.85f, x = 11 * menu.scale, y = (rowHeight - 18 * s) / 2;
                 using (Pen pen = new Pen(color, Math.Max(1, 1.35f * s)))
                 {
                     pen.StartCap = LineCap.Round;

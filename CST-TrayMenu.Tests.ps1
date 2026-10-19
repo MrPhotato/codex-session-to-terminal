@@ -38,7 +38,7 @@ try {
                 foreach ($dpiScale in @(1.0, 1.25, 1.5, 2.0)) {
                     $bitmap = $menu.RenderPreview([single]$dpiScale)
                     try {
-                        if ($bitmap.Width -ne [Math]::Round(340 * $dpiScale)) { throw "Incorrect menu width at scale $dpiScale." }
+                        if ($bitmap.Width -ne [Math]::Round(280 * $dpiScale)) { throw "Incorrect menu width at scale $dpiScale." }
                         if (!$([Windows.Forms.SystemInformation]::HighContrast)) {
                             $expected = if ($dark) { [Drawing.Color]::FromArgb(33,33,35) } else { [Drawing.Color]::FromArgb(252,252,253) }
                             if ($bitmap.GetPixel(2,2).ToArgb() -ne $expected.ToArgb()) { throw 'Menu theme background was not rendered.' }
