@@ -86,8 +86,8 @@ test('runtime workspace roots compare lexical Windows sets without broadening pe
     assert.throws(() => validateInheritedSettings(change, state), /not supported/);
   }
   const forwarded = [];
-  const desktop = { state, status: { ready: true }, currentOwner: { clientId: 'owner' },
-    async requestFollower(method, params) { forwarded.push({ method, params }); return { result: { result: { turn: { id: 'accepted' } } } }; } };
+  const desktop = Object.assign(new EventEmitter(), { state, status: { ready: true }, currentOwner: { clientId: 'owner' },
+    async requestFollower(method, params) { forwarded.push({ method, params }); return { result: { result: { turn: { id: 'accepted' } } } }; } });
   const controller = createDesktopController(desktop, 'thread');
   await controller.call('turn/start', { threadId: 'thread', runtimeWorkspaceRoots: [project, visual], input: [{ type: 'text', text: 'fixture' }] });
   assert.equal(forwarded.length, 1);
@@ -139,11 +139,11 @@ test('accepted native steer identity maps once to a real user message', () => {
 
 test('native message identity is preserved and uncertain Desktop delivery is never retried', async () => {
   const forwarded = [];
-  const desktop = { status: { ready: true }, currentOwner: { clientId: 'original-owner' },
+  const desktop = Object.assign(new EventEmitter(), { status: { ready: true }, currentOwner: { clientId: 'original-owner' },
     state: { cwd: 'C:\\test', latestThreadSettings: { model: 'real-model' }, turns: [] },
     async requestFollower(method, params) { forwarded.push({ method, params }); return { result: { result: { turn: { id: 'accepted-turn' } } } }; },
-  };
-  const control = createDesktopController(desktop, 'thread');
+  });
+  const control = createDesktopController(desktop, 'thread', { deliveryTimeoutMs: 20 });
   await control.call('turn/start', { threadId: 'thread', clientUserMessageId: 'native-client-id', input: [{ type: 'text', text: 'test' }] });
   assert.equal(forwarded[0].params.turnStart.request.clientUserMessageId, 'native-client-id');
   assert.equal(forwarded[0].params.conversationId, 'thread');

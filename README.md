@@ -33,7 +33,7 @@ Codex Session to Terminal 使用 ChatGPT 自带的“复制聊天链接”快捷
 | CLI 的历史浏览与输入快捷键 | 沿用官方 CLI 操作 |
 | Ctrl+C 或 `/quit` | 退出这个 CLI；任务运行时先留意 CLI 的中断提示 |
 
-部分 Windows 终端会把 Ctrl+Enter 编码成普通 Enter，这时请用 **Tab** 排队。Tab 已实测；Ctrl+Enter 已在本次 CLI 进程配置，实际按键取决于终端。Codex Session to Terminal 不修改你的全局终端快捷键。排队由这个 CLI 管理，关闭该终端会丢弃尚未发送的队列；Desktop 已接受的任务继续运行。发送结果不明确时请检查桌面，Codex Session to Terminal 不自动重放消息。
+部分 Windows 终端会把 Ctrl+Enter 编码成普通 Enter，这时请用 **Tab** 排队。Tab 已实测；Ctrl+Enter 已在本次 CLI 进程配置，实际按键取决于终端。Codex Session to Terminal 不修改你的全局终端快捷键。排队由这个 CLI 管理，关闭该终端会丢弃尚未发送的队列；Desktop 已接受的任务继续运行。发送确认超时后，会按唯一消息编号核对原会话的服务端回执；仍无法确认时请检查桌面，不自动重发消息。
 
 终端使用未修改的官方 Codex CLI。支持历史显示、运行中接入、双向文本消息、补充、排队、工具输出和中断。长聊天需要先由 Desktop 加载完整历史，首次连接可能需要几分钟；连接窗口会显示加载提示，可按 Ctrl+C 取消等待。无法取得完整快照时明确报错，不显示不完整历史冒充成功。审批、附件、模型切换、插件交互和未接入的原生命令仍在 Desktop 处理。云端聊天、远程主机及 SSH 任务不在本版范围内。
 

@@ -1,12 +1,78 @@
 import { randomUUID } from 'node:crypto';
 import { win32 as windowsPath } from 'node:path';
 import { getActiveTurnId } from './cst-state.mjs';
+import { apiTurn, orderedDesktopTurns } from './desktop-events.mjs';
 
 const fault = (message, code = -32000) => Object.assign(new Error(message), { rpcError: { code, message } });
 const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
 const normalize = value => value && typeof value === 'object' ? Array.isArray(value) ? value.map(normalize)
   : Object.fromEntries(Object.keys(value).sort().map(key => [key, normalize(value[key])])) : value;
 const stable = value => JSON.stringify(normalize(value));
+const unconfirmed = () => fault('The Desktop delivery result is unconfirmed. Check Desktop before sending again; Codex Session to Terminal did not retry.');
+
+// Match only server-confirmed messages. Local restore messages, optimistic turn
+// params and pending steering items do not prove that the backend accepted input.
+function serverReceiptId(item, clientUserMessageId) {
+  if (item?.type === 'userMessage' && validId(item.id) && item.clientId === clientUserMessageId) return item.id;
+  if (item?.type === 'steeringUserMessage' && item.status === 'accepted' && validId(item.serverUserMessageId) &&
+    item.serverClientUserMessageId === clientUserMessageId) return item.serverUserMessageId;
+  return null;
+}
+
+function confirmDelivery(desktop, { threadId, method, clientUserMessageId, activeTurnId, timeoutMs }, send) {
+  const ownerId = desktop.currentOwner?.clientId;
+  const originalTurns = orderedDesktopTurns(desktop.state);
+  const originalTurnIds = new Set(originalTurns.map(turn => turn.turnId));
+  const originalReceipts = new Set(originalTurns.flatMap(turn => (turn.items ?? []).map(item => {
+    const id = serverReceiptId(item, clientUserMessageId);
+    return id === null ? null : `${turn.turnId}\0${id}`;
+  })).filter(Boolean));
+  return new Promise((resolve, reject) => {
+    let settled = false, rpcUnconfirmed = false, receipt = null;
+    const connected = () => validId(ownerId) && desktop.status.ready && desktop.currentOwner?.clientId === ownerId;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      desktop.off('state', observe); desktop.off('status', checkStatus);
+      if (result && connected()) resolve(result); else reject(unconfirmed());
+    };
+    const checkStatus = () => { if (!connected()) finish(); };
+    const observe = state => {
+      if (!connected()) { finish(); return; }
+      if (state?.id !== threadId) return;
+      for (const turn of orderedDesktopTurns(state)) {
+        if (!validId(turn.turnId) || (method === 'turn/start' ? originalTurnIds.has(turn.turnId) : turn.turnId !== activeTurnId)) continue;
+        if (!(turn.items ?? []).some(item => {
+          const id = serverReceiptId(item, clientUserMessageId);
+          return id !== null && !originalReceipts.has(`${turn.turnId}\0${id}`);
+        })) continue;
+        receipt = method === 'turn/start' ? { turn: apiTurn(turn) } : { turnId: turn.turnId };
+        if (rpcUnconfirmed) finish(receipt);
+        return;
+      }
+    };
+    const failed = () => {
+      if (settled) return;
+      rpcUnconfirmed = true;
+      if (!connected()) finish();
+      else if (receipt) finish(receipt);
+    };
+    // The budget starts before the single send, and never resets after its RPC
+    // timeout. Owner loss or a resync invalidates the receipt observation.
+    const timer = setTimeout(() => finish(receipt), timeoutMs);
+    desktop.on('state', observe); desktop.on('status', checkStatus);
+    if (!connected()) { finish(); return; }
+    try {
+      Promise.resolve(send()).then(response => {
+        if (settled) return;
+        const result = response?.result?.result;
+        if (method === 'turn/steer' && validId(result?.turnId) && result.turnId !== activeTurnId) { finish(); return; }
+        if (method === 'turn/start' ? validId(result?.turn?.id) : validId(result?.turnId) && result.turnId === activeTurnId) finish(result);
+        else failed();
+      }, failed);
+    } catch { failed(); }
+  });
+}
 // Native CLI keeps the same roots but may deduplicate lexical path spellings
 // and put cwd first. Compare only that set; do not resolve aliases or broaden it.
 const comparableSetting = (key, value) => key === 'runtimeWorkspaceRoots' && Array.isArray(value) && value.every(root => typeof root === 'string')
@@ -53,7 +119,8 @@ export function assertControlReady(state) {
   }
 }
 
-export function createDesktopController(desktop, threadId) {
+export function createDesktopController(desktop, threadId, { deliveryTimeoutMs = 30000 } = {}) {
+  if (!Number.isSafeInteger(deliveryTimeoutMs) || deliveryTimeoutMs < 1 || deliveryTimeoutMs > 30000) throw new TypeError('Invalid deliveryTimeoutMs.');
   let pending = false;
   const counts = {};
   return {
@@ -104,14 +171,11 @@ export function createDesktopController(desktop, threadId) {
       pending = true;
       try {
         counts[method] = (counts[method] ?? 0) + 1;
-        const response = await desktop.requestFollower(ipcMethod, ipcParams);
-        const result = response.result?.result;
-        if (!(method === 'turn/start' ? validId(result?.turn?.id) : validId(result?.turnId))) throw fault('The Desktop delivery result is unconfirmed. Check Desktop before sending again; Codex Session to Terminal did not retry.');
-        if (method === 'turn/steer' && result.turnId !== activeTurnId) throw fault('The Desktop accepted a different active turn. Check Desktop before sending again; Codex Session to Terminal did not retry.');
-        return result;
+        return await confirmDelivery(desktop, { threadId, method, clientUserMessageId, activeTurnId, timeoutMs: deliveryTimeoutMs },
+          () => desktop.requestFollower(ipcMethod, ipcParams));
       } catch (cause) {
         if (cause.rpcError) throw cause;
-        throw fault('The Desktop delivery result is unconfirmed. Check Desktop before sending again; Codex Session to Terminal did not retry.');
+        throw unconfirmed();
       } finally { pending = false; }
     },
   };
