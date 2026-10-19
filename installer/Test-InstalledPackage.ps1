@@ -32,9 +32,9 @@ foreach ($entry in @(@('CST - Independent','Start-CST.cmd'),@('CST - Legacy Shar
     $links += $link
     if (!(Test-Path -LiteralPath $link) -or $shell.CreateShortcut($link).TargetPath -ine (Join-Path $app $entry[1])) { throw 'Independent or rollback entry is missing.' }
 }
-# The new bootstrap can be validated without opening the tray or Desktop.
+# The read-only check reports missing dependencies without installing anything.
 & (Join-Path $app 'runtime\powershell\pwsh.exe') -NoProfile -File (Join-Path $app 'Start-CST.ps1') -Check
-if ($LASTEXITCODE -ne 0) { throw 'Independent bootstrap check failed.' }
+if ($LASTEXITCODE -ne 1 -or (Test-Path -LiteralPath (Join-Path $app 'node_modules'))) { throw 'Independent bootstrap did not report missing dependencies without installing them.' }
 $registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{47CC0037-E859-49AB-A98E-D5251553C264}_is1'
 if (!(Test-Path -LiteralPath $registryPath)) { throw 'Current-user uninstall registration missing.' }
 if ((Get-ItemProperty -LiteralPath $registryPath).DisplayName -cne 'Codex Session to Terminal') { throw 'Wrong installed product name.' }
@@ -70,6 +70,8 @@ $expectedCli = (Get-Content -LiteralPath (Join-Path $app 'package.json') -Raw | 
 $node = Join-Path $app 'runtime\node\node.exe'
 Initialize-SessionBridgeDependencies -TestReady { Test-SessionBridgeDependencies -ApplicationRoot $app -ExpectedCliVersion $expectedCli } -Install { Install-SessionBridgeDependencies -ApplicationRoot $app -NodePath $node }
 Initialize-SessionBridgeDependencies -TestReady { Test-SessionBridgeDependencies -ApplicationRoot $app -ExpectedCliVersion $expectedCli } -Install { throw 'Ready dependencies should not download again.' }
+& (Join-Path $app 'runtime\powershell\pwsh.exe') -NoProfile -File (Join-Path $app 'Start-CST.ps1') -Check
+if ($LASTEXITCODE -ne 0) { throw 'Independent bootstrap check failed after dependency setup.' }
 $cli = Join-Path $app 'node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
 if ((& $cli --version) -cne ('codex-cli ' + $expectedCli) -or $LASTEXITCODE -ne 0) { throw 'Downloaded CLI version mismatch.' }
 

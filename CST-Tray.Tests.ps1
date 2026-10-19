@@ -66,6 +66,7 @@ try {
     if ($first -eq $second -or !(Test-Path -LiteralPath (Join-Path $first 'stop.flag')) -or (Test-Path -LiteralPath (Join-Path $second 'stop.flag'))) { throw 'Restart reused a generation or removed an old stop signal.' }
     $args = @(Get-CstTerminalArguments -ThreadId '12345678-1234-4234-9234-123456789abc' -ControlDirectory $second -PowerShellPath 'C:\a b\pwsh.exe' -BackendPath 'C:\official package\codex.exe')
     if ($args.Count -ne 9 -or $args[2] -cne '12345678-1234-4234-9234-123456789abc' -or $args[4] -ne $second -or $args[6] -ne 'C:\a b\pwsh.exe' -or $args[8] -ne 'C:\official package\codex.exe') { throw 'Terminal arguments were not preserved as separate values.' }
+    if ([IO.Path]::GetFileName($args[0]) -cne 'cst-native-terminal.mjs') { throw 'Independent must launch the official CLI wrapper.' }
     # Malformed reusable code must fail closed without evaluating expressions.
     $fixture = Join-Path $testRoot 'bad-listener.ps1'
     [IO.File]::WriteAllText($fixture, '$nativeSource = (throw "must not execute")')

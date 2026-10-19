@@ -104,7 +104,7 @@ function Show-CstRequestedPanel {
 
 function Get-CstTerminalArguments {
     param([Parameter(Mandatory)][guid]$ThreadId, [Parameter(Mandatory)][string]$ControlDirectory, [Parameter(Mandatory)][string]$PowerShellPath, [Parameter(Mandatory)][string]$BackendPath)
-    @((Join-Path $PSScriptRoot 'cst-terminal.mjs'), '--thread', $ThreadId.ToString('D'), '--control-directory', [IO.Path]::GetFullPath($ControlDirectory), '--powershell-path', $PowerShellPath, '--backend-path', $BackendPath)
+    @((Join-Path $PSScriptRoot 'cst-native-terminal.mjs'), '--thread', $ThreadId.ToString('D'), '--control-directory', [IO.Path]::GetFullPath($ControlDirectory), '--powershell-path', $PowerShellPath, '--backend-path', $BackendPath)
 }
 
 function Invoke-CstTerminal {

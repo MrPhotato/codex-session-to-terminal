@@ -5,7 +5,9 @@ import { randomUUID } from 'node:crypto';
 // This never starts a router, resumes a thread, or announces thread ownership.
 // The transport factory MUST authenticate the pipe peer before returning a stream.
 const VERSIONS = Object.freeze({ initialize: 0, 'thread-owner-discovery': 1,
-  'thread-follower-start-turn': 2, 'thread-follower-steer-turn': 1 });
+  'thread-follower-start-turn': 2, 'thread-follower-steer-turn': 1,
+  'thread-follower-interrupt-turn': 4, 'thread-follower-load-complete-history': 1 });
+const FOLLOWER_WRITES = new Set(['thread-follower-start-turn', 'thread-follower-steer-turn', 'thread-follower-interrupt-turn']);
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -73,6 +75,26 @@ function latestTurn(state) {
   return state.turns.findLast(turn => turn && (turn.turnId != null || !['completed', 'failed'].includes(turn.status))) ?? null;
 }
 
+function completeHistory(state) {
+  const history = state?.turnHistory?.kind === 'canonical' ? state.turnHistory.history : null;
+  const island = history?.islands?.length === 1 ? history.islands[0] : null;
+  if (!island || island.olderBoundary?.status !== 'exhausted' || island.newerBoundary?.status !== 'exhausted' ||
+    !Array.isArray(island.entries) || !object(history.entitiesByKey) || !Array.isArray(state.turns)) return false;
+  const turns = [], canonicalIds = new Set();
+  for (const entry of island.entries) {
+    const turn = history.entitiesByKey[entry?.value];
+    if (!object(turn) || !id(turn.turnId)) return false;
+    turns.push(turn); canonicalIds.add(turn.turnId);
+  }
+  for (const turn of state.turns) {
+    if (!object(turn) || turn.status === 'inProgress' && !id(turn.turnId)) return false;
+    if (id(turn.turnId) && !canonicalIds.has(turn.turnId)) turns.push(turn);
+  }
+  // Exhausted turn boundaries alone do not guarantee complete items: Desktop
+  // can paginate or evict a turn's items without changing those boundaries.
+  return turns.every(turn => Array.isArray(turn.items) && turn.itemsPagination?.hasLoadedOldest !== false);
+}
+
 /**
  * Events: state(conversationState, {revision, acceptedTextChanges}),
  * status({phase, ready, reason?}), error(Error with code/outcomeUnknown).
@@ -99,6 +121,7 @@ export class DesktopIpcClient extends EventEmitter {
     this._closed = true; this._generation = 0; this._sending = false;
     this._header = Buffer.alloc(4); this._headerUsed = 0; this._body = null; this._bodyUsed = 0;
     this._snapshotTimer = null; this._snapshotRetryTimer = null; this._readyWaiter = null; this._discovering = false;
+    this._historyLoad = null;
   }
 
   get state() { return this._state; }
@@ -115,7 +138,7 @@ export class DesktopIpcClient extends EventEmitter {
   _report(error) { if (this.listenerCount('error')) this.emit('error', error); }
   _rejectPending(error) {
     for (const pending of this._pending.values()) {
-      clearTimeout(pending.timer);
+      pending.cleanup();
       pending.reject(failure(error.code, error.message, pending.write));
     }
     this._pending.clear();
@@ -200,21 +223,29 @@ export class DesktopIpcClient extends EventEmitter {
     this._socket.write(Buffer.concat([header, body]));
   }
 
-  _request(method, params, { write = false, target = null } = {}) {
+  _request(method, params, { write = false, target = null, timeoutMs = this.options.timeoutMs, signal } = {}) {
     const version = VERSIONS[method];
     if (version === undefined) return Promise.reject(failure('UNSUPPORTED_METHOD', 'Unsupported Desktop request.'));
+    if (signal?.aborted) return Promise.reject(failure('ABORTED', 'Desktop request was cancelled.'));
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
         this._pending.delete(requestId);
+      };
+      const abort = () => { cleanup(); reject(failure('ABORTED', 'Desktop request was cancelled.', write)); };
+      const timer = setTimeout(() => {
+        cleanup();
         reject(failure('REQUEST_TIMEOUT', write ? 'Delivery is unconfirmed. Check Desktop before sending again.' : 'Desktop request timed out.', write));
-      }, this.options.timeoutMs);
-      this._pending.set(requestId, { resolve, reject, timer, method, target, write });
+      }, timeoutMs);
+      this._pending.set(requestId, { resolve, reject, timer, cleanup, method, target, write });
+      signal?.addEventListener('abort', abort, { once: true });
       try {
         this._write({ type: 'request', requestId, sourceClientId: this._clientId ?? 'initializing-client', version, method, params,
-          timeoutMs: this.options.timeoutMs, ...(target ? { targetClientId: target } : {}) });
+          timeoutMs, ...(target ? { targetClientId: target } : {}) });
       } catch (error) {
-        clearTimeout(timer); this._pending.delete(requestId); reject(error);
+        cleanup(); reject(error);
       }
     });
   }
@@ -273,7 +304,7 @@ export class DesktopIpcClient extends EventEmitter {
       const pending = this._pending.get(message.requestId);
       if (!pending) return;
       if (message.resultType === 'success' && (message.method !== pending.method || pending.target && message.handledByClientId !== pending.target)) return;
-      clearTimeout(pending.timer); this._pending.delete(message.requestId);
+      pending.cleanup();
       if (message.resultType === 'success') pending.resolve(message);
       else pending.reject(failure('REMOTE_ERROR', pending.write ? 'Desktop did not confirm delivery. Check the conversation before retrying.' : 'Desktop could not handle this request.', pending.write));
       return;
@@ -360,6 +391,71 @@ export class DesktopIpcClient extends EventEmitter {
       }
       return { action, clientUserMessageId: messageId, result };
     } finally { this._sending = false; }
+  }
+
+  /** Send one control request to the attached, existing owner. Never replay it. */
+  async requestFollower(method, params) {
+    if (!FOLLOWER_WRITES.has(method)) throw failure('UNSUPPORTED_METHOD', 'Unsupported Desktop follower control.');
+    if (!object(params) || params.conversationId !== this._threadId ||
+      params.hostId !== undefined && params.hostId !== 'local' ||
+      method === 'thread-follower-start-turn' && params.turnStart?.request?.threadId !== this._threadId) {
+      throw failure('INVALID_THREAD', 'The request must target the attached conversation.');
+    }
+    if (this._closed || !this._status.ready || !this._owner) throw failure('NOT_READY', 'Wait for a current Desktop snapshot before sending.');
+    return this._request(method, params, { target: this._owner.clientId, write: true });
+  }
+
+  /** Load history through the existing owner, then wait for its authoritative state. */
+  async ensureCompleteHistory({ timeoutMs = 60000, signal } = {}) {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 305000) throw new TypeError('Invalid history timeoutMs.');
+    if (signal && (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) throw new TypeError('Invalid history AbortSignal.');
+    if (signal?.aborted) throw failure('ABORTED', 'History loading was cancelled.');
+    if (this._closed || !this._status.ready || !this._owner) throw failure('NOT_READY', 'Wait for a current Desktop snapshot before loading history.');
+    if (completeHistory(this._state)) return this._state;
+    if (this._historyLoad) throw failure('HISTORY_LOAD_IN_PROGRESS', 'History loading is already in progress.');
+    const owner = this._owner.clientId, generation = this._generation;
+    const operation = {}, requestAbort = new AbortController();
+    this._historyLoad = operation;
+    return new Promise((resolve, reject) => {
+      let settled = false, targetRevision = null, retryTimer = null, attempts = 0;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); clearTimeout(retryTimer);
+        this.off('state', check); this.off('status', checkStatus);
+        signal?.removeEventListener('abort', abort);
+        requestAbort.abort();
+        if (this._historyLoad === operation) this._historyLoad = null;
+        if (error) reject(error); else resolve(this._state);
+      };
+      const checkStatus = () => {
+        if (this._closed || this._generation !== generation) finish(failure(this._status.reason ?? 'CLOSED', 'The Desktop connection ended while loading history.'));
+        else if (this._owner?.clientId !== owner) finish(failure('OWNER_DISCONNECTED', 'The Desktop owner changed while loading history.'));
+      };
+      const check = () => {
+        checkStatus();
+        if (!settled && targetRevision !== null && this._status.ready && this._revision >= targetRevision && completeHistory(this._state)) finish();
+      };
+      const requestSnapshot = () => {
+        retryTimer = null; check();
+        if (settled) return;
+        try { this._follow(true); } catch (error) { finish(error); return; }
+        if (++attempts < this.options.maxSnapshotAttempts) retryTimer = setTimeout(requestSnapshot, this.options.snapshotRetryMs);
+      };
+      const abort = () => finish(failure('ABORTED', 'History loading was cancelled.'));
+      const timer = setTimeout(() => finish(failure('HISTORY_TIMEOUT', 'Desktop did not provide complete history before the deadline.')), timeoutMs);
+      this.on('state', check); this.on('status', checkStatus);
+      signal?.addEventListener('abort', abort, { once: true });
+      // Loading is requested once. Only the read-only snapshot subscription may
+      // be repeated if its revision has not arrived; the deadline never moves.
+      this._request('thread-follower-load-complete-history', { conversationId: this._threadId },
+        { target: owner, timeoutMs, signal: requestAbort.signal }).then(response => {
+        if (settled) return;
+        if (!revision(response.result?.revision)) { finish(failure('PROTOCOL_ERROR', 'Desktop returned an invalid history revision.')); return; }
+        targetRevision = response.result.revision;
+        check();
+        if (!settled) retryTimer = setTimeout(requestSnapshot, this.options.snapshotRetryMs);
+      }, finish);
+    });
   }
 
   _disconnect(error) {

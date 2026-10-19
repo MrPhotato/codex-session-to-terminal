@@ -255,5 +255,8 @@ export async function main(args = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch(error => { process.stderr.write(safeText(error.message) + '\n'); process.exitCode = 1; });
+  // Keep already-running tray instances compatible with the native CLI upgrade.
+  // Existing utility exports remain importable without starting either UI.
+  import('./cst-native-terminal.mjs').then(({ main: startNative }) => startNative())
+    .catch(error => { process.stderr.write(safeText(error.message) + '\n'); process.exitCode = 1; });
 }

@@ -18,6 +18,10 @@ $sourceFiles = @(
     'Start-CST.cmd', 'Start-CST.ps1', 'CST-Tray.ps1', 'desktop-pipe-proxy.ps1',
     'CST-Panel.ps1', 'CST-Panel.cs', 'CST-Presence.ps1', 'cst-presence.mjs',
     'desktop-ipc.mjs', 'cst-transport.mjs', 'cst-state.mjs', 'cst-queue.mjs', 'cst-terminal.mjs', 'LEGACY.md',
+    'cst-native-terminal.mjs', 'native-cli-bridge.mjs', 'readonly-metadata.mjs',
+    'desktop-control.mjs', 'desktop-events.mjs', 'snapshot-history.mjs', 'protocol-validation.mjs',
+    'protocol-schema\LICENSE', 'protocol-schema\NOTICE', 'protocol-schema\ServerNotification.json', 'protocol-schema\v2\ThreadResumeResponse.json',
+    'protocol-schema\v2\ThreadTurnsListResponse.json', 'protocol-schema\v2\ThreadItemsListResponse.json',
     'Start.cmd', 'Start-Flow.ps1', 'Dependencies.ps1', 'Execution-Policy.ps1', 'bootstrap.ps1', 'production.ps1',
     'Discovery.ps1', 'Build-Shim.ps1', 'CodexSharedShim.cs',
     'Launcher-Environment.ps1', 'Watch-Chat-Link.ps1', 'Terminal-Focus.ps1',
@@ -69,7 +73,7 @@ foreach ($relative in $sourceFiles) {
     $destinationParent = Split-Path -Parent $destination
     if (Test-Path -LiteralPath $destinationParent) {
         if ((Get-Item -LiteralPath $destinationParent).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Payload links are not allowed: $relative" }
-    } else { [void](New-Item -ItemType Directory -Path $destinationParent) }
+    } else { [void](New-Item -ItemType Directory -Path $destinationParent -Force) }
     if ((Test-Path -LiteralPath $destination) -and ((Get-Item -LiteralPath $destination).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Payload links are not allowed: $relative"
     }

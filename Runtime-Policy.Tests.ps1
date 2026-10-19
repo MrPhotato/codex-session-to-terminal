@@ -85,9 +85,13 @@ public static class PolicyFixture {
 function Get-SessionBridgePowerShell { '$realPath' }
 function Get-SessionBridgeNode { '$($actualNode.Replace("'", "''"))' }
 "@ | Set-Content -LiteralPath (Join-Path $testRoot 'Discovery.ps1') -Encoding utf8
-    foreach ($name in @('CST-Tray.ps1', 'CST-Panel.ps1', 'CST-Panel.cs', 'CST-Presence.ps1', 'cst-presence.mjs', 'cst-terminal.mjs', 'Thread-Link.ps1', 'Terminal-Focus.ps1', 'Watch-Chat-Link.ps1')) {
-        '# inert test placeholder; must never execute' | Set-Content -LiteralPath (Join-Path $testRoot $name)
+    foreach ($name in @('CST-Tray.ps1', 'CST-Panel.ps1', 'CST-Panel.cs', 'CST-Presence.ps1', 'cst-presence.mjs', 'cst-terminal.mjs', 'cst-native-terminal.mjs','native-cli-bridge.mjs','readonly-metadata.mjs','desktop-control.mjs','desktop-events.mjs','snapshot-history.mjs','protocol-validation.mjs','protocol-schema/ServerNotification.json','protocol-schema/v2/ThreadResumeResponse.json','protocol-schema/v2/ThreadTurnsListResponse.json','protocol-schema/v2/ThreadItemsListResponse.json', 'Thread-Link.ps1', 'Terminal-Focus.ps1', 'Watch-Chat-Link.ps1')) {
+        $fixturePath = Join-Path $testRoot $name
+        [void](New-Item -ItemType Directory -Path (Split-Path -Parent $fixturePath) -Force)
+        '# inert test placeholder; must never execute' | Set-Content -LiteralPath $fixturePath
     }
+    'function Test-SessionBridgeDependencies { $true }; function Initialize-SessionBridgeDependencies { throw "Check must not install dependencies" }' | Set-Content -LiteralPath (Join-Path $testRoot 'Dependencies.ps1')
+    '{"dependencies":{"@openai/codex":"0.163.0-alpha.10.2"}}' | Set-Content -LiteralPath (Join-Path $testRoot 'package.json')
     'param([string]$Action); "legacy-policy-ready=$Action"; exit 0' | Set-Content -LiteralPath (Join-Path $testRoot 'production.ps1')
     $newEntry = (Join-Path $testRoot 'Start-CST.ps1').Replace("'", "''")
     $result = Invoke-PolicyTestHost -Script "`$ErrorActionPreference='Stop'; & '$newEntry' -Check; exit `$LASTEXITCODE"

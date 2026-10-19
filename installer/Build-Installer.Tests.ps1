@@ -31,6 +31,7 @@ try {
     [void](New-Item -ItemType Directory -Path $fixtureRepo)
     Get-ChildItem -LiteralPath $repo -File | Copy-Item -Destination $fixtureRepo
     Copy-Item -LiteralPath (Join-Path $repo 'assets') -Destination $fixtureRepo -Recurse
+    Copy-Item -LiteralPath (Join-Path $repo 'protocol-schema') -Destination $fixtureRepo -Recurse
     Write-FixtureFile (Join-Path $fixtureRepo 'auth.json') 'DO-NOT-PACK-test-sentinel'
     Write-FixtureFile (Join-Path $fixtureRepo '.env') 'DO-NOT-PACK-test-sentinel'
     Write-FixtureFile (Join-Path $fixtureRepo 'node_modules\private-state.json') 'DO-NOT-PACK-test-sentinel'
@@ -62,6 +63,9 @@ try {
     if (!$include.Contains('Start.cmd') -or !$include.Contains('Dependencies.ps1') -or !$include.Contains('Execution-Policy.ps1') -or !$include.Contains('check-startup.mjs')) { throw 'First-start entry files are missing.' }
     foreach ($newFile in @('Start-CST.cmd','CST-Tray.ps1','CST-Panel.ps1','CST-Panel.cs','CST-Presence.ps1','cst-presence.mjs','desktop-ipc.mjs','desktop-pipe-proxy.ps1','cst-terminal.mjs','cst-state.mjs','cst-transport.mjs','cst-queue.mjs','LEGACY.md')) {
         if (!$include.Contains($newFile)) { throw "Independent mode or rollback file missing: $newFile" }
+    }
+    foreach ($nativeFile in @('cst-native-terminal.mjs','native-cli-bridge.mjs','readonly-metadata.mjs','desktop-control.mjs','desktop-events.mjs','snapshot-history.mjs','protocol-validation.mjs','protocol-schema\ServerNotification.json','protocol-schema\v2\ThreadResumeResponse.json','protocol-schema\v2\ThreadTurnsListResponse.json','protocol-schema\v2\ThreadItemsListResponse.json')) {
+        if (!$include.Contains($nativeFile) -or !(Test-Path -LiteralPath (Join-Path $payload $nativeFile))) { throw "Native CLI adapter file missing: $nativeFile" }
     }
 
     # A tiny command fixture has no PE version resource. Its supported version

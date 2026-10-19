@@ -34,12 +34,14 @@ try {
     $expectedVersion = '0.163.0-alpha.10.2'
     if (Test-SessionBridgeDependencies -ApplicationRoot $testRoot -ExpectedCliVersion $expectedVersion) { throw 'Empty dependencies were accepted.' }
     $fixtures = @{
-        'package.json' = '{"dependencies":{"ws":"8.22.0"}}'
+        'package.json' = '{"dependencies":{"ws":"8.22.0","ajv":"8.17.1"}}'
         'node_modules\@openai\codex\package.json' = '{"version":"0.163.0-alpha.10.2"}'
         'node_modules\@openai\codex-win32-x64\package.json' = '{"version":"0.163.0-alpha.10.2-win32-x64"}'
         'node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe' = 'inert file; never executable'
         'node_modules\ws\package.json' = '{"version":"8.22.0"}'
         'node_modules\ws\index.js' = '// inert dependency fixture'
+        'node_modules\ajv\package.json' = '{"version":"8.17.1"}'
+        'node_modules\ajv\dist\ajv.js' = '// inert dependency fixture'
     }
     foreach ($entry in $fixtures.GetEnumerator()) {
         $path = Join-Path $testRoot $entry.Key
@@ -47,6 +49,9 @@ try {
         $entry.Value | Set-Content -LiteralPath $path -Encoding utf8
     }
     if (!(Test-SessionBridgeDependencies -ApplicationRoot $testRoot -ExpectedCliVersion $expectedVersion)) { throw 'Matching fixture dependencies were rejected.' }
+    '{"version":"0.0.0"}' | Set-Content -LiteralPath (Join-Path $testRoot 'node_modules\ajv\package.json') -Encoding utf8
+    if (Test-SessionBridgeDependencies -ApplicationRoot $testRoot -ExpectedCliVersion $expectedVersion) { throw 'Mismatched protocol validator was accepted.' }
+    '{"version":"8.17.1"}' | Set-Content -LiteralPath (Join-Path $testRoot 'node_modules\ajv\package.json') -Encoding utf8
     '{"version":"0.0.0-win32-x64"}' | Set-Content -LiteralPath (Join-Path $testRoot 'node_modules\@openai\codex-win32-x64\package.json') -Encoding utf8
     if (Test-SessionBridgeDependencies -ApplicationRoot $testRoot -ExpectedCliVersion $expectedVersion) { throw 'Mismatched native CLI dependencies were accepted.' }
 } finally {

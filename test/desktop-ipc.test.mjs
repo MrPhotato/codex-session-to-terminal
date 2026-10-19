@@ -19,6 +19,16 @@ function state(status = 'completed') {
     { turnId: 'turn-1', status, items: [{ type: 'agentMessage', text: 'hello' }] },
   ] };
 }
+function canonicalState({ partial = false, partialItems = false } = {}) {
+  const conversation = state(), turn = conversation.turns[0];
+  turn.itemsPagination = { hasLoadedOldest: !partialItems, ...(partialItems ? { evicted: true } : {}) };
+  conversation.turns = [];
+  conversation.turnHistory = { kind: 'canonical', history: {
+    islands: [{ entries: [{ value: 'turn-1' }], olderBoundary: { status: partial ? 'available' : 'exhausted' }, newerBoundary: { status: 'exhausted' } }],
+    entitiesByKey: { 'turn-1': turn },
+  } };
+  return conversation;
+}
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 async function until(predicate) {
   for (let index = 0; index < 100; index++) { if (predicate()) return; await tick(); }
@@ -27,7 +37,7 @@ async function until(predicate) {
 async function fixture(t, options = {}) {
   const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\cst-test-${randomUUID()}` : path.join(os.tmpdir(), `cst-${randomUUID()}.sock`);
   const sockets = new Set(), messages = [], controls = [];
-  const result = { messages, controls, conversation: options.conversation ?? state(), revision: 1, owner: ownerId, follows: 0, dropSnapshots: options.dropSnapshots ?? 0 };
+  const result = { messages, controls, historyLoads: [], conversation: options.conversation ?? state(), revision: 1, owner: ownerId, follows: 0, dropSnapshots: options.dropSnapshots ?? 0 };
   const server = net.createServer(socket => {
     sockets.add(socket); result.socket = socket;
     socket.on('error', () => {}); socket.on('close', () => sockets.delete(socket));
@@ -40,10 +50,15 @@ async function fixture(t, options = {}) {
         if (request.type === 'request') {
           if (request.method === 'initialize') result.reply(request, { clientId }, clientId);
           else if (request.method === 'thread-owner-discovery') result.reply(request, { supportsUntrustedAppInput: true }, result.owner);
+          else if (request.method === 'thread-follower-load-complete-history') {
+            result.historyLoads.push(request);
+            options.onHistoryLoad?.(request, result);
+          }
           else {
             controls.push(request);
             const accepted = request.method === 'thread-follower-start-turn' ? { turn: { id: 'turn-2' } } : { turnId: 'turn-1' };
-            if (!options.dropWrites) result.reply(request, { result: options.unconfirmedWrite ? {} : accepted }, result.owner);
+            if (!options.dropWrites) result.reply(request, request.method === 'thread-follower-interrupt-turn'
+              ? { ok: true, interruptedTurnId: 'turn-1' } : { result: options.unconfirmedWrite ? {} : accepted }, result.owner);
           }
         } else if (request.method === 'thread-stream-following-changed' && request.params.following) {
           result.follows++;
@@ -338,4 +353,152 @@ test('split framing is accepted and unknown discovery requests are explicitly de
   for (const byte of data) f.socket.write(Buffer.from([byte]));
   await until(() => f.messages.some(message => message.type === 'client-discovery-response'));
   assert.deepEqual(f.messages.find(message => message.type === 'client-discovery-response').response, { canHandle: false });
+});
+
+test('public follower controls bind versions, conversation and owner while preserving the response envelope', async t => {
+  const f = await fixture(t); await f.client.connect(threadId);
+  for (const [method, version] of [['thread-follower-start-turn', 2], ['thread-follower-steer-turn', 1], ['thread-follower-interrupt-turn', 4]]) {
+    const params = { conversationId: threadId, ...(method.endsWith('start-turn') ? { turnStart: { request: { threadId } } } : {}) };
+    const response = await f.client.requestFollower(method, params);
+    assert.equal(response.method, method); assert.equal(response.resultType, 'success');
+    assert.equal(f.controls.at(-1).version, version); assert.equal(f.controls.at(-1).targetClientId, ownerId);
+    assert.deepEqual(f.controls.at(-1).params, params);
+  }
+  assert.deepEqual(f.controls.map(request => request.method), ['thread-follower-start-turn', 'thread-follower-steer-turn', 'thread-follower-interrupt-turn']);
+});
+
+test('public follower validation never forwards unsupported, foreign or unavailable controls', async t => {
+  const f = await fixture(t); await f.client.connect(threadId);
+  await assert.rejects(f.client.requestFollower('thread-follower-load-complete-history', { conversationId: threadId }), { code: 'UNSUPPORTED_METHOD' });
+  await assert.rejects(f.client.requestFollower('thread-follower-steer-turn', { conversationId: 'other' }), { code: 'INVALID_THREAD' });
+  await assert.rejects(f.client.requestFollower('thread-follower-steer-turn', { conversationId: threadId, hostId: 'other' }), { code: 'INVALID_THREAD' });
+  await assert.rejects(f.client.requestFollower('thread-follower-start-turn', { conversationId: threadId, turnStart: { request: { threadId: 'other' } } }), { code: 'INVALID_THREAD' });
+  f.client.close();
+  await assert.rejects(f.client.requestFollower('thread-follower-interrupt-turn', { conversationId: threadId }), { code: 'NOT_READY' });
+  assert.equal(f.controls.length, 0); assert.equal(f.historyLoads.length, 0);
+});
+
+test('public controls mark an unconfirmed write and never replay it', async t => {
+  const f = await fixture(t, { dropWrites: true, clientOptions: { timeoutMs: 60 } }); await f.client.connect(threadId);
+  await assert.rejects(f.client.requestFollower('thread-follower-interrupt-turn', { conversationId: threadId }), { code: 'REQUEST_TIMEOUT', outcomeUnknown: true });
+  await tick(); assert.equal(f.controls.length, 1);
+  const pending = f.client.requestFollower('thread-follower-steer-turn', { conversationId: threadId });
+  const rejected = assert.rejects(pending, { code: 'CLOSED', outcomeUnknown: true });
+  await until(() => f.controls.length === 2); f.client.close(); await rejected;
+  assert.equal(f.controls.length, 2);
+});
+
+test('already complete canonical history returns the same authoritative state without a request', async t => {
+  const f = await fixture(t, { conversation: canonicalState() }); await f.client.connect(threadId);
+  assert.equal(await f.client.ensureCompleteHistory(), f.client.state);
+  assert.equal(f.historyLoads.length, 0); assert.equal(f.follows, 1);
+  for (const timeoutMs of [0, -1, 305001, 1.5]) await assert.rejects(f.client.ensureCompleteHistory({ timeoutMs }), /timeoutMs/);
+});
+
+test('history loads once through the original owner and accepts state that arrives before its reply', async t => {
+  const f = await fixture(t, { conversation: canonicalState({ partial: true }), onHistoryLoad(request, server) {
+    server.conversation = canonicalState(); server.revision = 4; server.snapshot();
+    server.reply(request, { revision: 4 }, server.owner);
+  } });
+  await f.client.connect(threadId);
+  const complete = await f.client.ensureCompleteHistory({ timeoutMs: 300 });
+  assert.equal(complete, f.client.state); assert.equal(f.client.revision, 4);
+  assert.equal(f.historyLoads.length, 1); assert.equal(f.controls.length, 0);
+  const request = f.historyLoads[0];
+  assert.equal(request.version, 1); assert.equal(request.targetClientId, ownerId); assert.equal(request.timeoutMs, 300);
+  assert.deepEqual(request.params, { conversationId: threadId });
+  assert.equal(f.client.owner.clientId, ownerId); assert.equal(f.follows, 1);
+  assert(!f.messages.some(message => /resume|start-turn/.test(message.method)));
+});
+
+test('per-turn partial or evicted items require a load and a missing publication is recovered by following', async t => {
+  const f = await fixture(t, { conversation: canonicalState({ partialItems: true }), clientOptions: { snapshotRetryMs: 15 }, onHistoryLoad(request, server) {
+    server.conversation = canonicalState(); server.revision = 2;
+    server.reply(request, { revision: 2 }, server.owner);
+  } });
+  await f.client.connect(threadId);
+  await f.client.ensureCompleteHistory({ timeoutMs: 200 });
+  assert.equal(f.historyLoads.length, 1); assert.equal(f.follows, 2); assert.equal(f.client.revision, 2);
+  await new Promise(resolve => setTimeout(resolve, 50)); assert.equal(f.follows, 2);
+});
+
+test('complete state below the returned revision cannot finish history loading', async t => {
+  const f = await fixture(t, { conversation: canonicalState({ partial: true }), clientOptions: { snapshotRetryMs: 100 }, onHistoryLoad(request, server) {
+    server.conversation = canonicalState(); server.revision = 2; server.snapshot();
+    server.reply(request, { revision: 3 }, server.owner);
+  } });
+  await f.client.connect(threadId);
+  let completed = false;
+  const load = f.client.ensureCompleteHistory({ timeoutMs: 400 }).then(result => { completed = true; return result; });
+  await until(() => f.client.revision === 2); await tick(); assert.equal(completed, false);
+  f.revision = 3; f.snapshot(); await load;
+  assert.equal(f.client.revision, 3); assert.equal(f.historyLoads.length, 1);
+});
+
+test('history accepts complete authoritative patches at the acknowledged revision without another snapshot', async t => {
+  const f = await fixture(t, { conversation: canonicalState({ partialItems: true }), onHistoryLoad(request, server) {
+    server.reply(request, { revision: 2 }, server.owner);
+    server.patch([{ op: 'replace', path: ['turnHistory', 'history', 'entitiesByKey', 'turn-1', 'itemsPagination', 'hasLoadedOldest'], value: true }]);
+  } });
+  await f.client.connect(threadId);
+  const complete = await f.client.ensureCompleteHistory({ timeoutMs: 300 });
+  assert.equal(complete.turnHistory.history.entitiesByKey['turn-1'].itemsPagination.hasLoadedOldest, true);
+  assert.equal(f.client.revision, 2); assert.equal(f.follows, 1); assert.equal(f.historyLoads.length, 1);
+});
+
+test('history snapshot retries and the overall deadline are bounded without replaying the load', async t => {
+  const f = await fixture(t, { conversation: canonicalState({ partial: true }), clientOptions: { snapshotRetryMs: 10 }, onHistoryLoad(request, server) {
+    server.reply(request, { revision: 2 }, server.owner);
+  } });
+  await f.client.connect(threadId);
+  const stateListeners = f.client.listenerCount('state'), statusListeners = f.client.listenerCount('status');
+  await assert.rejects(f.client.ensureCompleteHistory({ timeoutMs: 90 }), { code: 'HISTORY_TIMEOUT', outcomeUnknown: false });
+  assert.equal(f.historyLoads.length, 1); assert.equal(f.follows, 4); assert.equal(f.client.status.ready, true);
+  assert.equal(f.client.listenerCount('state'), stateListeners); assert.equal(f.client.listenerCount('status'), statusListeners);
+  assert.equal(f.client._pending.size, 0); assert.equal(f.client._historyLoad, null);
+  await new Promise(resolve => setTimeout(resolve, 40)); assert.equal(f.follows, 4);
+});
+
+test('a missing history reply times out once and removes its pending request', async t => {
+  const f = await fixture(t, { conversation: canonicalState({ partial: true }) }); await f.client.connect(threadId);
+  await assert.rejects(f.client.ensureCompleteHistory({ timeoutMs: 50 }), { code: 'HISTORY_TIMEOUT' });
+  assert.equal(f.historyLoads.length, 1); assert.equal(f.follows, 1); assert.equal(f.client._pending.size, 0);
+});
+
+test('history waiting rejects on owner loss, close, or cancellation and never claims another owner', async t => {
+  for (const action of ['owner-loss', 'close', 'abort']) {
+    const f = await fixture(t, { conversation: canonicalState({ partial: true }) }); await f.client.connect(threadId);
+    const abort = new AbortController();
+    const load = f.client.ensureCompleteHistory({ timeoutMs: 300, signal: abort.signal });
+    const rejected = assert.rejects(load, { code: action === 'owner-loss' ? 'OWNER_DISCONNECTED' : action === 'close' ? 'CLOSED' : 'ABORTED', outcomeUnknown: false });
+    await until(() => f.historyLoads.length === 1);
+    if (action === 'owner-loss') f.broadcast('client-status-changed', { clientId: ownerId, status: 'disconnected' }, { version: 0 });
+    else if (action === 'close') f.client.close();
+    else abort.abort();
+    await rejected;
+    assert.equal(f.client._pending.size, 0); assert.equal(f.client._historyLoad, null);
+    assert.equal(f.historyLoads.length, 1); assert.equal(f.controls.length, 0);
+  }
+});
+
+test('history refuses concurrent loads and invalid owner revision without hiding protocol failure', async t => {
+  const f = await fixture(t, { conversation: canonicalState({ partial: true }) }); await f.client.connect(threadId);
+  const load = f.client.ensureCompleteHistory({ timeoutMs: 300 });
+  const rejected = assert.rejects(load, { code: 'PROTOCOL_ERROR' });
+  await assert.rejects(f.client.ensureCompleteHistory(), { code: 'HISTORY_LOAD_IN_PROGRESS' });
+  await until(() => f.historyLoads.length === 1);
+  f.reply(f.historyLoads[0], { revision: 'invalid' }, ownerId); await rejected;
+  assert.equal(f.historyLoads.length, 1); assert.equal(f.client._pending.size, 0);
+});
+
+test('history stream protocol failure rejects immediately and stops all recovery attempts', async t => {
+  const f = await fixture(t, { conversation: canonicalState({ partial: true }), clientOptions: { snapshotRetryMs: 40 }, onHistoryLoad(request, server) {
+    server.reply(request, { revision: 2 }, server.owner);
+    server.change({ type: 'snapshot', revision: 2, conversationState: canonicalState() }, { version: 12 });
+  } });
+  await f.client.connect(threadId);
+  await assert.rejects(f.client.ensureCompleteHistory({ timeoutMs: 300 }), { code: 'UNSUPPORTED_VERSION' });
+  await new Promise(resolve => setTimeout(resolve, 70));
+  assert.equal(f.historyLoads.length, 1); assert.equal(f.follows, 1);
+  assert.equal(f.client._pending.size, 0); assert.equal(f.client.listenerCount('state'), 0);
 });
