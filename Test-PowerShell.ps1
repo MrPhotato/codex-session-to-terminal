@@ -13,6 +13,7 @@ foreach ($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1') {
 & (Join-Path $PSScriptRoot 'Start-Flow.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Dependencies.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Execution-Policy.Tests.ps1')
+& (Join-Path $PSScriptRoot 'Runtime-Policy.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Runtime-Discovery.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Cli-Compatibility.Tests.ps1')
 & (Join-Path $PSScriptRoot 'CST-Tray.Tests.ps1')

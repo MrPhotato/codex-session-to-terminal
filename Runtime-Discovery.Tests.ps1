@@ -12,6 +12,7 @@ try {
     @'
 using System;
 using System.IO;
+using System.Text;
 public static class RuntimeFixture {
     public static int Main(string[] args) {
         if (Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]) == "node") {
@@ -23,9 +24,14 @@ public static class RuntimeFixture {
             Console.WriteLine("fixture-cwd=" + Environment.CurrentDirectory);
             return 37;
         }
-        if (Array.IndexOf(args, "-Command") >= 0) {
-            int command = Array.IndexOf(args, "-Command");
-            if (command + 1 < args.Length && args[command + 1].Contains("Get-ExecutionPolicy")) {
+        int encodedCommand = Array.IndexOf(args, "-EncodedCommand");
+        int command = Array.IndexOf(args, "-Command");
+        if (command >= 0 || encodedCommand >= 0) {
+            string script = encodedCommand >= 0 && encodedCommand + 1 < args.Length
+                ? Encoding.Unicode.GetString(Convert.FromBase64String(args[encodedCommand + 1]))
+                : (command + 1 < args.Length ? args[command + 1] : "");
+            if (script.Contains("Get-ExecutionPolicy")) {
+                if (encodedCommand < 0) { Console.Error.WriteLine("Policy probes must preserve their script using EncodedCommand."); return 91; }
                 string userPolicy = Environment.GetEnvironmentVariable("CST_FIXTURE_POLICY") == "AllSigned" ? "AllSigned" : "Undefined";
                 Console.WriteLine("{\"EffectivePolicy\":\"Restricted\",\"Scopes\":[{\"Scope\":\"MachinePolicy\",\"ExecutionPolicy\":\"Undefined\"},{\"Scope\":\"UserPolicy\",\"ExecutionPolicy\":\"Undefined\"},{\"Scope\":\"Process\",\"ExecutionPolicy\":\"Undefined\"},{\"Scope\":\"CurrentUser\",\"ExecutionPolicy\":\"" + userPolicy + "\"},{\"Scope\":\"LocalMachine\",\"ExecutionPolicy\":\"Undefined\"}]}");
                 return 0;
