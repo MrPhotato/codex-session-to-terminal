@@ -1,6 +1,6 @@
 #requires -Version 7.4
 param(
-    [ValidateSet('Start','Prepare','Launch','Status','OpenCli','StopShortcut')]
+    [ValidateSet('Start','Prepare','Launch','Check','Status','OpenCli','StopShortcut')]
     [string]$Action = 'Status',
     [string]$ThreadId
 )
@@ -9,8 +9,7 @@ if (!$IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 $privateRoot = Join-Path $env:LOCALAPPDATA 'SessionBridge'
 $configFile = Join-Path $privateRoot 'config.json'
 $launchFile = Join-Path $privateRoot 'desktop.json'
-$expectedDesktop = '26.1013.3656.0'
-$expectedCli = '0.163.0-alpha.10.2'
+$expectedClientCli = '0.163.0-alpha.10.2'
 $pwshPath = Join-Path $PSHOME 'pwsh.exe'
 . (Join-Path $PSScriptRoot 'Launcher-Environment.ps1')
 . (Join-Path $PSScriptRoot 'Discovery.ps1')
@@ -43,10 +42,16 @@ function Get-Port {
 function Get-CurrentPackage {
     $package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
     if (!$package) { throw 'ChatGPT Desktop is not installed for this Windows user.' }
-    if ($package.Version.ToString() -ne $expectedDesktop) {
-        throw "ChatGPT is version $($package.Version); this sync launcher was checked with $expectedDesktop. Open ChatGPT normally until the launcher is revalidated. No app was started or stopped."
-    }
+    if (!(Test-Path -LiteralPath (Join-Path $package.InstallLocation 'app\ChatGPT.exe') -PathType Leaf)) { throw 'The installed Desktop package has an unsupported application layout.' }
     $package
+}
+function Get-CurrentCompatibility {
+    $package = Get-CurrentPackage
+    $realCli = Get-SessionBridgeInstalledCli -PackageInstallLocation $package.InstallLocation
+    $fullCli = Join-Path $PSScriptRoot 'node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+    $backend = Assert-SessionBridgeCliCapabilities -Path $realCli -Role Backend
+    $client = Assert-SessionBridgeCliCapabilities -Path $fullCli -Role Client
+    @{ Package=$package; Backend=$backend; Client=$client }
 }
 function Native-Args($values) {
     @($values | ForEach-Object { '"' + ($_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' })
@@ -59,24 +64,31 @@ switch ($Action) {
             -Prepare {
                 [void](Get-CurrentPackage)
                 Initialize-SessionBridgeDependencies `
-                    -TestReady { Test-SessionBridgeDependencies -ApplicationRoot $PSScriptRoot -ExpectedCliVersion $expectedCli } `
+                    -TestReady { Test-SessionBridgeDependencies -ApplicationRoot $PSScriptRoot -ExpectedCliVersion $expectedClientCli } `
                     -Install { Install-SessionBridgeDependencies -ApplicationRoot $PSScriptRoot -NodePath (Get-SessionBridgeNode) }
-                & $launcherScript -Action Prepare
             } `
             -Launch { & $launcherScript -Action Launch }
     }
+    'Check' {
+        $compatibility = Get-CurrentCompatibility
+        [pscustomobject]@{
+            compatible=$true; desktopVersion=$compatibility.Package.Version.ToString()
+            backendVersion=$compatibility.Backend.Version; clientVersion=$compatibility.Client.Version
+            backendPath=$compatibility.Backend.Path; clientPath=$compatibility.Client.Path
+            checks=@('backend-websocket-options','client-remote-options')
+            protocolVerified=$false
+        } | ConvertTo-Json -Depth 3
+    }
     'Prepare' {
         Assert-SessionBridgeDesktopClosed -RunningDesktop @(Get-NormalDesktop)
-        $package = Get-CurrentPackage
         if (Test-OwnedProcess (Get-DesktopRecord)) { throw 'The shared Desktop is still running; its launcher and connection settings will not be changed.' }
-        $realCli = Get-SessionBridgeInstalledCli -ExpectedVersion $expectedCli
+        $compatibility = Get-CurrentCompatibility
+        $package = $compatibility.Package
+        $realCli = $compatibility.Backend.Path
         $nodePath = Get-SessionBridgeNode
-        $fullCli = Join-Path $PSScriptRoot 'node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
-        foreach ($candidate in @($realCli,$fullCli)) {
-            if (!(Test-Path -LiteralPath $candidate)) { throw 'The matching Codex CLI is missing.' }
-            $version = (& $candidate --version | Out-String).Trim()
-            if ($LASTEXITCODE -ne 0 -or $version -ne "codex-cli $expectedCli") { throw 'CLI version mismatch; revalidate before enabling.' }
-        }
+        $fullCli = $compatibility.Client.Path
+        # Recheck after the bounded probes, before touching any live settings.
+        Assert-SessionBridgeDesktopClosed -RunningDesktop @(Get-NormalDesktop)
         [void](New-Item -ItemType Directory -Path $privateRoot -Force)
         $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         & icacls.exe $privateRoot '/inheritance:r' '/grant:r' ('*'+$sid+':(OI)(CI)F') '*S-1-5-18:(OI)(CI)F' | Out-Null
@@ -94,7 +106,8 @@ switch ($Action) {
                 desktopPath=(Join-Path $package.InstallLocation 'app\ChatGPT.exe')
                 backendPort=(Get-Port); backendTokenFile=$tokenFile
                 runtimeFile=(Join-Path $privateRoot 'runtime.json'); interceptOriginator='Codex Desktop'
-                desktopVersion=$expectedDesktop; cliVersion=$expectedCli
+                desktopVersion=$package.Version.ToString(); cliVersion=$compatibility.Client.Version
+                backendVersion=$compatibility.Backend.Version
             } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configFile -Encoding utf8
         } else {
             $config = Read-PrivateConfig
@@ -106,17 +119,20 @@ switch ($Action) {
             $config.shimPath = $shim
             $config.bridgePath = Join-Path $PSScriptRoot 'bridge-shim.mjs'
             $config.desktopPath = Join-Path $package.InstallLocation 'app\ChatGPT.exe'
-            $config.desktopVersion = $expectedDesktop
-            $config.cliVersion = $expectedCli
+            $config.desktopVersion = $package.Version.ToString()
+            $config.cliVersion = $compatibility.Client.Version
+            $config.backendVersion = $compatibility.Backend.Version
             $config | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configFile -Encoding utf8
         }
         Write-Output 'Prepared. The running Desktop, normal profile, and system launch settings have not changed.'
     }
     'Launch' {
         Assert-SessionBridgeDesktopClosed -RunningDesktop @(Get-NormalDesktop)
+        # Daily Desktop updates may move both executables. Refresh the paths and
+        # the native forwarding fallback after verifying capabilities each time.
+        & $PSCommandPath -Action Prepare
+        Assert-SessionBridgeDesktopClosed -RunningDesktop @(Get-NormalDesktop)
         $config = Read-PrivateConfig
-        [void](Get-CurrentPackage)
-        if ($config.desktopVersion -ne $expectedDesktop -or $config.cliVersion -ne $expectedCli) { throw 'Run Prepare to update the local launcher settings before opening ChatGPT in shared mode.' }
         $stopFlag = Join-Path $privateRoot 'stop.flag'
         if (Test-Path -LiteralPath $stopFlag) { Remove-Item -LiteralPath $stopFlag }
         $generation = [Guid]::NewGuid().ToString()
@@ -125,6 +141,8 @@ switch ($Action) {
         $desktop = Start-Process -FilePath $config.desktopPath -WorkingDirectory $env:USERPROFILE -WindowStyle Hidden -Environment $environment -PassThru
         $record = @{pid=$desktop.Id; startedTicks=$desktop.StartTime.ToUniversalTime().Ticks.ToString(); generation=$generation}
         $record | ConvertTo-Json | Set-Content -LiteralPath $launchFile -Encoding utf8
+        $healthOutput = & $config.nodePath (Join-Path $PSScriptRoot 'check-startup.mjs') --config $configFile --generation $generation --timeout-ms 60000
+        if ($LASTEXITCODE -ne 0) { throw 'The shared connection did not become ready. Desktop has been left running; the shortcut listener was not started.' }
         $watchArgs = @('-NoProfile','-STA','-File',(Join-Path $PSScriptRoot 'Watch-Chat-Link.ps1'),'-DesktopPid',$record.pid.ToString(),'-DesktopStartTicks',$record.startedTicks,'-ControlDirectory',$privateRoot)
         $watcher = Start-Process -FilePath $pwshPath -ArgumentList (Native-Args $watchArgs) -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
         @{pid=$watcher.Id; startedTicks=$watcher.StartTime.ToUniversalTime().Ticks.ToString()} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $privateRoot 'watcher.json') -Encoding utf8
