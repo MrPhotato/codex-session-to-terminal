@@ -146,6 +146,51 @@ test('a failed bridge closes bookkeeping without starting CLI', async () => {
   assert.equal(f.events.listenerCount('SIGTERM'), 0);
 });
 
+test('initialization cleanup statuses never hide the original history, schema or metadata error', async () => {
+  for (const code of ['HISTORY_TIMEOUT', 'PROTOCOL_SCHEMA_MISMATCH', 'METADATA_TIMEOUT']) {
+    const original = Object.assign(new Error('private diagnostic details'), { code });
+    let bridgeSignal;
+    const f = fixture({ createBridge: async value => {
+      bridgeSignal = value.signal;
+      value.onStatus({ phase: 'ready', ready: true });
+      value.onStatus({ phase: 'disconnected', ready: false, reason: 'CLOSED' });
+      value.onStatus({ phase: 'closed', ready: false });
+      // Mirrors the bridge's catch -> await stop() -> throw cause sequence.
+      await nextTurn();
+      assert.equal(value.signal.aborted, false);
+      throw original;
+    } });
+    await assert.rejects(runNativeTerminal(options, f.dependencies), error => error === original);
+    assert.equal(bridgeSignal.aborted, true);
+    assert.equal(f.calls.spawn.length, 0);
+    assert.equal(f.calls.presenceClose, 1);
+  }
+});
+
+test('an initializer that returns after reporting a terminal status still fails closed', async () => {
+  const f = fixture();
+  f.dependencies.createBridge = async value => {
+    value.onStatus({ phase: 'disconnected', ready: false, reason: 'PROTOCOL_ERROR' });
+    return f.bridge; // Even a stale ready getter cannot authorize a CLI launch.
+  };
+  await assert.rejects(runNativeTerminal(options, f.dependencies), { code: 'PROTOCOL_ERROR' });
+  assert.equal(f.calls.spawn.length, 0);
+  assert.equal(f.calls.bridgeClose, 1);
+  assert.equal(f.calls.presenceClose, 1);
+});
+
+test('specific connection errors survive a preceding disconnected status during initialization', async () => {
+  const original = Object.assign(new Error('private transport details'), { code: 'PIPE_AUTH_FAILED' });
+  const f = fixture({ createBridge: async value => {
+    value.onStatus({ phase: 'disconnected', ready: false, reason: original.code });
+    value.onError(original);
+    throw original;
+  } });
+  await assert.rejects(runNativeTerminal(options, f.dependencies), error => error === original);
+  assert.equal(f.calls.spawn.length, 0);
+  assert.equal(f.calls.presenceClose, 1);
+});
+
 test('check mode connects read-only, verifies readiness and closes without spawning', async () => {
   const f = fixture();
   assert.equal(await runNativeTerminal({ ...options, check: true }, f.dependencies), 0);
@@ -187,6 +232,18 @@ test('bridge disconnection ends the wrapper without retrying user operations', a
   assert.equal(f.calls.spawn.length, 1);
 });
 
+test('an established connection retains the specific safe disconnect reason and stops its CLI', async () => {
+  const f = fixture();
+  const run = runNativeTerminal(options, f.dependencies);
+  const rejected = assert.rejects(run, { code: 'PROTOCOL_ERROR' });
+  await nextTurn();
+  f.bridgeArgs.onStatus({ phase: 'disconnected', ready: false, reason: 'PROTOCOL_ERROR' });
+  await rejected;
+  assert.deepEqual(f.calls.kill, ['SIGTERM']);
+  assert.equal(f.calls.bridgeClose, 1);
+  assert.equal(f.calls.presenceClose, 1);
+});
+
 test('external abort and process shutdown release only wrapper-owned resources', async () => {
   for (const type of ['abort', 'SIGTERM', 'SIGINT']) {
     const abort = new AbortController();
@@ -208,6 +265,7 @@ test('displayed errors never echo raw exception messages or arbitrary error code
   assert.match(nativeTerminalError({ code: 'SNAPSHOT_TIMEOUT', message: secret }, 'zh-CN'), /超时/);
   assert.match(nativeTerminalError({ code: 'HISTORY_TIMEOUT', message: secret }, 'en-SG'), /history timed out.*HISTORY_TIMEOUT/);
   assert.match(nativeTerminalError({ code: 'PROTOCOL_SCHEMA_MISMATCH' }, 'zh-TW'), /不兼容/);
+  assert.match(nativeTerminalError({ code: 'FRAME_TOO_LARGE' }, 'zh-CN'), /超出了支持的通信大小/);
   assert.match(nativeTerminalError({ code: 'FUTURE_SAFE_CODE' }, 'en-US'), /\(FUTURE_SAFE_CODE\)$/);
   assert.equal(nativeTerminalError({ code: 'A'.repeat(65) }).includes('A'.repeat(65)), false);
 });

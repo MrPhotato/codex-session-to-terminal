@@ -95,6 +95,26 @@ test('requires a verified transport and validates bounds', () => {
   }
 });
 
+test('the default admits the observed large history header up to the Desktop protocol cap without allocating its payload', t => {
+  const client = new DesktopIpcClient({ transportFactory() {} });
+  assert.equal(client.options.maxFrameBytes, 268435456);
+  const allocations = [];
+  // Exercise header admission with a tiny stand-in for the body. This does not
+  // claim to test a 118 MiB transfer and never allocates private history bytes.
+  t.mock.method(Buffer, 'allocUnsafe', bytes => { allocations.push(bytes); return Buffer.alloc(1); });
+  const header = Buffer.alloc(4); header.writeUInt32LE(123537367);
+  assert.doesNotThrow(() => client._parse(header));
+  assert.deepEqual(allocations, [123537367]);
+  const oversized = new DesktopIpcClient({ transportFactory() {} });
+  header.writeUInt32LE(268435457);
+  assert.throws(() => oversized._parse(header), { code: 'FRAME_TOO_LARGE', frameBytes: 268435457, limitBytes: 268435456 });
+  assert.deepEqual(allocations, [123537367]);
+  const limited = new DesktopIpcClient({ transportFactory() {}, maxFrameBytes: 64 * 1024 * 1024 });
+  header.writeUInt32LE(123537367);
+  assert.throws(() => limited._parse(header), { code: 'FRAME_TOO_LARGE', frameBytes: 123537367, limitBytes: 67108864 });
+  assert.deepEqual(allocations, [123537367]);
+});
+
 test('discovers an existing owner with its own assigned identity, follows and cleans up', async t => {
   const f = await fixture(t);
   await f.client.connect(threadId);
@@ -249,9 +269,31 @@ test('message bounds are UTF-8 byte based and validation never transmits', async
 
 test('oversized or unsupported protocol frames close the connection', async t => {
   const f = await fixture(t, { clientOptions: { maxFrameBytes: 2048 } }); await f.client.connect(threadId);
+  let reported;
+  f.client.once('error', error => { reported = error; });
   const header = Buffer.alloc(4); header.writeUInt32LE(2049); f.socket.write(header);
   await until(() => f.client.status.phase === 'disconnected');
+  assert.equal(reported.frameBytes, 2049); assert.equal(reported.limitBytes, 2048);
+  assert.match(reported.message, /2049.*2048/);
   await assert.rejects(f.client.send('closed'), { code: 'NOT_READY' });
+});
+
+test('invalid empty frame diagnostics expose only byte counts', async t => {
+  const f = await fixture(t, { clientOptions: { maxFrameBytes: 2048 } }); await f.client.connect(threadId);
+  let reported;
+  f.client.once('error', error => { reported = error; });
+  f.socket.write(Buffer.alloc(4));
+  await until(() => f.client.status.phase === 'disconnected');
+  assert.equal(reported.code, 'FRAME_TOO_LARGE'); assert.equal(reported.frameBytes, 0); assert.equal(reported.limitBytes, 2048);
+});
+
+test('outgoing oversize diagnostics do not include input contents or send a frame', async t => {
+  const f = await fixture(t, { clientOptions: { maxFrameBytes: 2048 } }); await f.client.connect(threadId);
+  await assert.rejects(f.client.requestFollower('thread-follower-steer-turn', { conversationId: threadId, text: 'private-marker'.repeat(300) }), error => {
+    assert.equal(error.code, 'FRAME_TOO_LARGE'); assert(error.frameBytes > 2048); assert.equal(error.limitBytes, 2048);
+    assert(!error.message.includes('private-marker')); return true;
+  });
+  assert.equal(f.controls.length, 0);
 });
 
 test('a missing snapshot times out and does not leave an indefinite connect', async t => {

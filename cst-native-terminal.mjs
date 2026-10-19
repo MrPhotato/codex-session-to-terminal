@@ -65,6 +65,8 @@ export function nativeTerminalError(error, locale = systemLocale()) {
     HISTORY_TIMEOUT: ['完整历史加载超时，请在桌面端打开该聊天后重试。', 'Loading the complete chat history timed out. Open this chat in Desktop and retry.'],
     HISTORY_LOAD_IN_PROGRESS: ['会话历史仍在加载，请稍后重新打开终端。', 'Chat history is still loading. Reopen the terminal shortly.'],
     OWNER_UNAVAILABLE: ['找不到当前会话，请在桌面端打开该聊天后重试。', 'The current chat is unavailable. Open it in Desktop and retry.'],
+    NO_OWNER: ['桌面端尚未加载这条会话，请先打开它再连接。', 'Desktop has not loaded this chat. Open it before connecting.'],
+    FRAME_TOO_LARGE: ['会话数据超出了支持的通信大小，无法打开此终端。', 'The chat data exceeds the supported transport size. This terminal cannot open it.'],
     CLI_START_FAILED: ['官方 Codex CLI 启动失败，请检查 CST 安装是否完整。', 'The official Codex CLI could not start. Check that the CST installation is complete.'],
     MISSING_CWD: ['会话的工作目录尚未就绪，请在桌面端打开该聊天后重试。', 'The chat working directory is unavailable. Open the chat in Desktop and retry.'],
     PROTOCOL_SCHEMA_MISMATCH: ['会话数据与官方 CLI 协议不兼容，请更新 CST 后重试。', 'The chat data does not match the official CLI protocol. Update CST and retry.'],
@@ -109,6 +111,7 @@ export async function runNativeTerminal(options, {
   const abort = new AbortController();
   const presence = createPresence({ controlDirectory: options.controlDirectory, threadId: options.threadId });
   let bridge, child, childDone, childExited = false, closed = false, timer, stopError, closePromise;
+  let initializing = true, initialStatusError;
   let rejectStopped;
   const stopped = new Promise((_, reject) => { rejectStopped = reject; });
   // Every phase races this promise; attach a handler now for synchronous events.
@@ -157,13 +160,25 @@ export async function runNativeTerminal(options, {
       onStatus: status => {
         if (closed || stopError) return;
         presence.updateStatus(status);
-        if (['disconnected', 'closed', 'owner-unavailable'].includes(status?.phase)) requestStop(failure('OWNER_UNAVAILABLE'));
+        if (['disconnected', 'closed', 'owner-unavailable'].includes(status?.phase)) {
+          const code = typeof status.reason === 'string' && /^[A-Z0-9_]{1,64}$/.test(status.reason) && status.reason !== 'CLOSED'
+            ? status.reason : 'OWNER_UNAVAILABLE';
+          const error = failure(code);
+          // Initialization failures close the Desktop client before rejecting
+          // createBridge. Its cleanup statuses must not replace that original
+          // schema/history/metadata error in the Promise race below. No CLI is
+          // launched until initialization has succeeded without a terminal state.
+          if (initializing) initialStatusError ??= error;
+          else requestStop(error);
+        }
       },
       onError: error => requestStop(error),
     })).then(async result => {
       // An adapter that finishes after cancellation must not leave a listener.
       if (closed || stopError) { await result.close(); throw stopError ?? failure('ABORTED'); }
       bridge = result;
+      if (initialStatusError) throw initialStatusError;
+      initializing = false;
       return result;
     });
     await Promise.race([pendingBridge, stopped]);

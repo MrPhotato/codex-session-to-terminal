@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 // Desktop's existing client-coordination protocol, observed in 26.1013.4894.0.
 // This never starts a router, resumes a thread, or announces thread ownership.
 // The transport factory MUST authenticate the pipe peer before returning a stream.
+// Its framed reader permits 256 MiB. Long, valid histories can exceed 64 MiB.
 const VERSIONS = Object.freeze({ initialize: 0, 'thread-owner-discovery': 1,
   'thread-follower-start-turn': 2, 'thread-follower-steer-turn': 1,
   'thread-follower-interrupt-turn': 4, 'thread-follower-load-complete-history': 1 });
@@ -16,6 +17,12 @@ const revision = value => Number.isSafeInteger(value) && value >= 0;
 
 function failure(code, message, outcomeUnknown = false) {
   return Object.assign(new Error(message), { code, outcomeUnknown });
+}
+
+function frameFailure(frameBytes, limitBytes, outgoing = false) {
+  return Object.assign(failure('FRAME_TOO_LARGE',
+    `${outgoing ? 'Outgoing' : 'Incoming'} Desktop frame has ${frameBytes} bytes; the permitted range is 1–${limitBytes} bytes.`),
+  { frameBytes, limitBytes });
 }
 
 // Immer patches use array paths, not JSON Pointer strings. Copy only affected
@@ -104,7 +111,7 @@ function completeHistory(state) {
 export class DesktopIpcClient extends EventEmitter {
   constructor({ transportFactory, queueSender, timeoutMs = 5000, connectTimeoutMs = 15000,
     snapshotTimeoutMs = Math.min(60000, timeoutMs * 3), snapshotRetryMs = Math.min(2000, timeoutMs), maxSnapshotAttempts = 3,
-    maxFrameBytes = 64 * 1024 * 1024, maxInputBytes = 256 * 1024 } = {}) {
+    maxFrameBytes = 256 * 1024 * 1024, maxInputBytes = 256 * 1024 } = {}) {
     super();
     if (typeof transportFactory !== 'function') throw failure('VERIFIED_TRANSPORT_REQUIRED', 'An authenticated Desktop pipe transport is required.');
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new TypeError('Invalid timeoutMs.');
@@ -139,7 +146,8 @@ export class DesktopIpcClient extends EventEmitter {
   _rejectPending(error) {
     for (const pending of this._pending.values()) {
       pending.cleanup();
-      pending.reject(failure(error.code, error.message, pending.write));
+      pending.reject(Object.assign(failure(error.code, error.message, pending.write), error.code === 'FRAME_TOO_LARGE'
+        ? { frameBytes: error.frameBytes, limitBytes: error.limitBytes } : {}));
     }
     this._pending.clear();
   }
@@ -200,7 +208,7 @@ export class DesktopIpcClient extends EventEmitter {
         offset += length; this._headerUsed += length;
         if (this._headerUsed < 4) continue;
         const bytes = this._header.readUInt32LE(0);
-        if (!bytes || bytes > this.options.maxFrameBytes) throw failure('FRAME_TOO_LARGE', 'Desktop frame exceeds the configured limit.');
+        if (!bytes || bytes > this.options.maxFrameBytes) throw frameFailure(bytes, this.options.maxFrameBytes);
         this._body = Buffer.allocUnsafe(bytes); this._bodyUsed = 0;
       }
       const length = Math.min(this._body.length - this._bodyUsed, chunk.length - offset);
@@ -218,7 +226,7 @@ export class DesktopIpcClient extends EventEmitter {
   _write(message) {
     if (this._closed || !this._socket?.writable) throw failure('DISCONNECTED', 'Desktop is not connected.');
     const body = Buffer.from(JSON.stringify(message));
-    if (body.length > this.options.maxFrameBytes) throw failure('FRAME_TOO_LARGE', 'Outgoing frame is too large.');
+    if (body.length > this.options.maxFrameBytes) throw frameFailure(body.length, this.options.maxFrameBytes, true);
     const header = Buffer.alloc(4); header.writeUInt32LE(body.length);
     this._socket.write(Buffer.concat([header, body]));
   }
