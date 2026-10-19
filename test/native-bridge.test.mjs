@@ -66,6 +66,38 @@ test('unimplemented changes to execution settings fail before forwarding', () =>
   assert.throws(() => validateInheritedSettings({ runtimeWorkspaceRoots: ['C:\\test', 'C:\\Users\\test'] }, state), /not supported/);
 });
 
+test('runtime workspace roots compare lexical Windows sets without broadening permissions', async () => {
+  const project = 'C:\\workspace\\project', visual = 'C:\\Users\\test\\.codex\\visualizations';
+  const originalRoots = [visual, project, 'C:\\Users\\test/.codex/visualizations'];
+  const state = { cwd: project, latestThreadSettings: { cwd: project, model: 'real' },
+    currentPermissions: { runtimeWorkspaceRoots: originalRoots, approvalPolicy: 'on-request',
+      sandboxPolicy: { type: 'workspaceWrite', writableRoots: [project, visual], networkAccess: false } }, turns: [] };
+  for (const roots of [[project, visual], [visual, project], [project, visual, visual], ['C:/workspace/project', visual]]) {
+    validateInheritedSettings({ runtimeWorkspaceRoots: roots }, state);
+  }
+  assert.deepEqual(state.currentPermissions.runtimeWorkspaceRoots, originalRoots);
+  for (const roots of [[project, visual, 'C:\\extra'], [project], [project, `${visual}-sibling`], [project, 'C:\\Users\\test'],
+    [project, 'C:\\Users\\test\\.codex\\Visualizations'], [project, 'C:\\junction-alias']]) {
+    assert.throws(() => validateInheritedSettings({ runtimeWorkspaceRoots: roots }, state), /Changing runtimeWorkspaceRoots/);
+  }
+  for (const change of [{ approvalPolicy: 'never' }, { sandboxPolicy: { ...state.currentPermissions.sandboxPolicy, networkAccess: true } },
+    { sandboxPolicy: { ...state.currentPermissions.sandboxPolicy, writableRoots: [visual, project] } },
+    { sandboxPolicy: { ...state.currentPermissions.sandboxPolicy, writableRoots: [project, visual, visual] } }]) {
+    assert.throws(() => validateInheritedSettings(change, state), /not supported/);
+  }
+  const forwarded = [];
+  const desktop = { state, status: { ready: true }, currentOwner: { clientId: 'owner' },
+    async requestFollower(method, params) { forwarded.push({ method, params }); return { result: { result: { turn: { id: 'accepted' } } } }; } };
+  const controller = createDesktopController(desktop, 'thread');
+  await controller.call('turn/start', { threadId: 'thread', runtimeWorkspaceRoots: [project, visual], input: [{ type: 'text', text: 'fixture' }] });
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].params.turnStart.context.inheritThreadSettings, true);
+  assert.equal(Object.hasOwn(forwarded[0].params.turnStart.request, 'runtimeWorkspaceRoots'), false);
+  await assert.rejects(controller.call('turn/start', { threadId: 'thread', runtimeWorkspaceRoots: [project, visual, 'C:\\extra'],
+    input: [{ type: 'text', text: 'fixture' }] }), /Changing runtimeWorkspaceRoots/);
+  assert.equal(forwarded.length, 1);
+});
+
 test('control refuses unconfirmed optimistic turns and incomplete live tails', () => {
   assert.throws(() => assertControlReady({ turns: [{ status: 'inProgress' }] }), /admitting a new turn/);
   assert.throws(() => assertControlReady({ turnHistory: { kind: 'canonical', history: { islands: [{ newerBoundary: { status: 'available' } }] } } }), /current end/);

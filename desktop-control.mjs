@@ -7,8 +7,10 @@ const validId = value => typeof value === 'string' && value.length > 0 && value.
 const normalize = value => value && typeof value === 'object' ? Array.isArray(value) ? value.map(normalize)
   : Object.fromEntries(Object.keys(value).sort().map(key => [key, normalize(value[key])])) : value;
 const stable = value => JSON.stringify(normalize(value));
-const comparableSetting = (key, value) => key === 'runtimeWorkspaceRoots' && Array.isArray(value)
-  ? value.map(root => typeof root === 'string' ? windowsPath.normalize(root) : root)
+// Native CLI keeps the same roots but may deduplicate lexical path spellings
+// and put cwd first. Compare only that set; do not resolve aliases or broaden it.
+const comparableSetting = (key, value) => key === 'runtimeWorkspaceRoots' && Array.isArray(value) && value.every(root => typeof root === 'string')
+  ? [...new Set(value.map(root => windowsPath.normalize(root)))].sort()
   : key === 'cwd' && typeof value === 'string' ? windowsPath.normalize(value) : value;
 
 export function validateInheritedSettings(params, state, method = 'turn/start') {
