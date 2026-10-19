@@ -13,7 +13,7 @@ function Invoke-InstallerProcess([string]$Path, [string]$LogName, [string[]]$Ext
     return $process.ExitCode
 }
 if ((Invoke-InstallerProcess $InstallerPath 'install.log' @('/TASKS="desktopicon"')) -ne 0) { throw 'Silent installation failed.' }
-foreach ($relative in @('Start.cmd','Dependencies.ps1','runtime\node\node.exe','runtime\powershell\pwsh.exe','runtime\node\LICENSE','runtime\powershell\LICENSE.txt','runtime\powershell\ThirdPartyNotices.txt','licenses\INNO-SETUP-LICENSE.txt','unins000.exe')) {
+foreach ($relative in @('Start.cmd','Start-CST.cmd','CST-Tray.ps1','desktop-pipe-proxy.ps1','desktop-ipc.mjs','cst-terminal.mjs','LEGACY.md','Dependencies.ps1','runtime\node\node.exe','runtime\powershell\pwsh.exe','runtime\node\LICENSE','runtime\powershell\LICENSE.txt','runtime\powershell\ThirdPartyNotices.txt','licenses\INNO-SETUP-LICENSE.txt','unins000.exe')) {
     if (!(Test-Path -LiteralPath (Join-Path $app $relative) -PathType Leaf)) { throw "Installed file is missing: $relative" }
 }
 if ((Test-Path -LiteralPath (Join-Path $app 'node_modules')) -or (Test-Path -LiteralPath $privateRoot)) { throw 'Installation unexpectedly initialized dependencies or private state.' }
@@ -25,8 +25,16 @@ $links = @(
 foreach ($link in $links) {
     if (!(Test-Path -LiteralPath $link)) { throw "Shortcut missing: $link" }
     $shortcut = $shell.CreateShortcut($link)
-    if ($shortcut.TargetPath -ine (Join-Path $app 'Start.cmd')) { throw 'Shortcut does not target the installed entry point.' }
+    if ($shortcut.TargetPath -ine (Join-Path $app 'Start-CST.cmd')) { throw 'Shortcut does not target the independent entry point.' }
 }
+foreach ($entry in @(@('CST - Independent','Start-CST.cmd'),@('CST - Legacy Shared Startup','Start.cmd'))) {
+    $link = Join-Path ([Environment]::GetFolderPath('Programs')) ('Codex Session to Terminal\' + $entry[0] + '.lnk')
+    $links += $link
+    if (!(Test-Path -LiteralPath $link) -or $shell.CreateShortcut($link).TargetPath -ine (Join-Path $app $entry[1])) { throw 'Independent or rollback entry is missing.' }
+}
+# The new bootstrap can be validated without opening the tray or Desktop.
+& (Join-Path $app 'runtime\powershell\pwsh.exe') -NoProfile -File (Join-Path $app 'Start-CST.ps1') -Check
+if ($LASTEXITCODE -ne 0) { throw 'Independent bootstrap check failed.' }
 $registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{47CC0037-E859-49AB-A98E-D5251553C264}_is1'
 if (!(Test-Path -LiteralPath $registryPath)) { throw 'Current-user uninstall registration missing.' }
 if ((Get-ItemProperty -LiteralPath $registryPath).DisplayName -cne 'Codex Session to Terminal') { throw 'Wrong installed product name.' }

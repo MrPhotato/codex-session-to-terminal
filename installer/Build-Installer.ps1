@@ -6,7 +6,7 @@ param(
     [string]$CompilerPath,
     [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'output\installer'),
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$')]
-    [string]$Version = '0.1.0-preview.2',
+    [string]$Version = '0.2.0-preview.1',
     [switch]$ValidateOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -15,6 +15,8 @@ Set-StrictMode -Version Latest
 # Copy only reviewed application files. Secrets, generated private state, tests,
 # .git, and a developer's node_modules are not part of the installer payload.
 $sourceFiles = @(
+    'Start-CST.cmd', 'Start-CST.ps1', 'CST-Tray.ps1', 'desktop-pipe-proxy.ps1',
+    'desktop-ipc.mjs', 'cst-transport.mjs', 'cst-state.mjs', 'cst-queue.mjs', 'cst-terminal.mjs', 'LEGACY.md',
     'Start.cmd', 'Start-Flow.ps1', 'Dependencies.ps1', 'Execution-Policy.ps1', 'bootstrap.ps1', 'production.ps1',
     'Discovery.ps1', 'Build-Shim.ps1', 'CodexSharedShim.cs',
     'Launcher-Environment.ps1', 'Watch-Chat-Link.ps1', 'Terminal-Focus.ps1',
