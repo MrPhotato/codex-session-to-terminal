@@ -27,7 +27,7 @@ async function until(predicate) {
 async function fixture(t, options = {}) {
   const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\cst-test-${randomUUID()}` : path.join(os.tmpdir(), `cst-${randomUUID()}.sock`);
   const sockets = new Set(), messages = [], controls = [];
-  const result = { messages, controls, conversation: options.conversation ?? state(), revision: 1, owner: ownerId, follows: 0 };
+  const result = { messages, controls, conversation: options.conversation ?? state(), revision: 1, owner: ownerId, follows: 0, dropSnapshots: options.dropSnapshots ?? 0 };
   const server = net.createServer(socket => {
     sockets.add(socket); result.socket = socket;
     socket.on('error', () => {}); socket.on('close', () => sockets.delete(socket));
@@ -47,7 +47,8 @@ async function fixture(t, options = {}) {
           }
         } else if (request.method === 'thread-stream-following-changed' && request.params.following) {
           result.follows++;
-          if (!options.noSnapshots) result.snapshot();
+          if (result.dropSnapshots > 0) result.dropSnapshots--;
+          else if (!options.noSnapshots) result.snapshot();
         }
       }
     });
@@ -74,6 +75,9 @@ async function fixture(t, options = {}) {
 test('requires a verified transport and validates bounds', () => {
   assert.throws(() => new DesktopIpcClient(), { code: 'VERIFIED_TRANSPORT_REQUIRED' });
   assert.throws(() => new DesktopIpcClient({ transportFactory() {}, maxFrameBytes: 300000000 }), /maxFrameBytes/);
+  for (const option of ['snapshotTimeoutMs', 'snapshotRetryMs', 'maxSnapshotAttempts']) {
+    assert.throws(() => new DesktopIpcClient({ transportFactory() {}, [option]: 0 }), new RegExp(option));
+  }
 });
 
 test('discovers an existing owner with its own assigned identity, follows and cleans up', async t => {
@@ -236,9 +240,49 @@ test('oversized or unsupported protocol frames close the connection', async t =>
 });
 
 test('a missing snapshot times out and does not leave an indefinite connect', async t => {
-  const f = await fixture(t, { noSnapshots: true, clientOptions: { timeoutMs: 50 } });
+  const f = await fixture(t, { noSnapshots: true, clientOptions: { snapshotTimeoutMs: 100, snapshotRetryMs: 15 } });
   await assert.rejects(f.client.connect(threadId), { code: 'SNAPSHOT_TIMEOUT' });
   assert.equal(f.client.status.phase, 'disconnected');
+  assert.equal(f.follows, 3);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(f.follows, 3);
+  assert.equal(f.controls.length, 0);
+});
+
+test('a lost initial snapshot retries only following and stops as soon as state arrives', async t => {
+  const f = await fixture(t, { dropSnapshots: 1, clientOptions: { snapshotRetryMs: 20, snapshotTimeoutMs: 200 } });
+  await f.client.connect(threadId);
+  assert.equal(f.follows, 2);
+  assert.equal(f.client.status.ready, true);
+  assert.equal(f.client.owner.clientId, ownerId);
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(f.follows, 2);
+  assert.equal(f.controls.length, 0);
+  assert.deepEqual(f.messages.filter(message => message.type === 'request').map(message => message.method), ['initialize', 'thread-owner-discovery']);
+});
+
+test('a lost resync snapshot recovers with the same owner after a revision gap', async t => {
+  const f = await fixture(t, { clientOptions: { snapshotRetryMs: 20, snapshotTimeoutMs: 200 } });
+  await f.client.connect(threadId);
+  f.dropSnapshots = 1;
+  f.conversation = { ...state(), title: 'current state' }; f.revision = 5;
+  f.change({ type: 'patches', baseRevision: 4, revision: 5, patches: [] });
+  await until(() => f.client.revision === 5);
+  assert.equal(f.follows, 3);
+  assert.equal(f.client.state.title, 'current state');
+  assert.equal(f.client.owner.clientId, ownerId);
+  assert.equal(f.controls.length, 0);
+});
+
+test('closing while waiting for a snapshot cancels all subscription retries', async t => {
+  const f = await fixture(t, { noSnapshots: true, clientOptions: { snapshotRetryMs: 50, snapshotTimeoutMs: 200 } });
+  const pending = assert.rejects(f.client.connect(threadId), { code: 'CLOSED' });
+  await until(() => f.follows === 1);
+  f.client.close();
+  await pending;
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(f.follows, 1);
+  assert.equal(f.controls.length, 0);
 });
 
 test('owner loss during initial snapshot rejects connect instead of hanging', async t => {
@@ -271,7 +315,20 @@ test('stream version mismatch fails closed before any input is sent', async t =>
   const f = await fixture(t); await f.client.connect(threadId);
   f.change({ type: 'patches', baseRevision: 1, revision: 2, patches: [] }, { version: 12 });
   await until(() => f.client.status.phase === 'disconnected');
+  assert.equal(f.client.status.reason, 'UNSUPPORTED_VERSION');
   await assert.rejects(f.client.send('do not transmit'), { code: 'NOT_READY' });
+  assert.equal(f.controls.length, 0);
+});
+
+test('an unsupported snapshot protocol cancels pending retries without accepting state', async t => {
+  const f = await fixture(t, { noSnapshots: true, clientOptions: { snapshotRetryMs: 50, snapshotTimeoutMs: 200 } });
+  const pending = assert.rejects(f.client.connect(threadId), { code: 'UNSUPPORTED_VERSION' });
+  await until(() => f.follows === 1);
+  f.change({ type: 'snapshot', revision: 1, conversationState: f.conversation }, { version: 12 });
+  await pending;
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(f.follows, 1);
+  assert.equal(f.client.state, null);
   assert.equal(f.controls.length, 0);
 });
 

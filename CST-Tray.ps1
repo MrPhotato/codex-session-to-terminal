@@ -71,6 +71,37 @@ function Stop-CstRun {
     [IO.File]::WriteAllText((Join-Path $ControlDirectory 'stop.flag'), [DateTime]::UtcNow.ToString('o'))
 }
 
+function New-CstTrayInstance {
+    param([string]$Name = ('Local\CSTIndependent-' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
+    $activation = $null; $mutex = $null; $ownsMutex = $false
+    try {
+        # Keep the event alive before competing for ownership. A second launch
+        # can then request the panel even while the first is initializing its UI.
+        $activation = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::AutoReset, ($Name + '-Activate'))
+        $mutex = [Threading.Mutex]::new($false, $Name)
+        try { $ownsMutex = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
+        if (!$ownsMutex) { [void]$activation.Set() }
+        return [pscustomobject]@{ OwnsMutex = $ownsMutex; Mutex = $mutex; Activation = $activation }
+    } catch {
+        if ($ownsMutex) { $mutex.ReleaseMutex() }
+        if ($mutex) { $mutex.Dispose() }
+        if ($activation) { $activation.Dispose() }
+        throw
+    }
+}
+
+function Close-CstTrayInstance {
+    param([Parameter(Mandatory)]$Instance)
+    if ($Instance.OwnsMutex) { $Instance.Mutex.ReleaseMutex() }
+    $Instance.Mutex.Dispose()
+    $Instance.Activation.Dispose()
+}
+
+function Show-CstRequestedPanel {
+    param([Parameter(Mandatory)]$Instance, [Parameter(Mandatory)]$Panel, [switch]$Initial)
+    if ($Initial -or $Instance.Activation.WaitOne(0)) { $Panel.ShowPanel() }
+}
+
 function Get-CstTerminalArguments {
     param([Parameter(Mandatory)][guid]$ThreadId, [Parameter(Mandatory)][string]$ControlDirectory, [Parameter(Mandatory)][string]$PowerShellPath, [Parameter(Mandatory)][string]$BackendPath)
     @((Join-Path $PSScriptRoot 'cst-terminal.mjs'), '--thread', $ThreadId.ToString('D'), '--control-directory', [IO.Path]::GetFullPath($ControlDirectory), '--powershell-path', $PowerShellPath, '--backend-path', $BackendPath)
@@ -111,23 +142,23 @@ function Invoke-CstTerminal {
 function Start-CstTray {
     param([Parameter(Mandatory)][string]$NodeExecutable)
     if (!$IsWindows -or [Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { throw 'Start CST with PowerShell 7 -STA on Windows.' }
-    if (!(Test-Path -LiteralPath $NodeExecutable -PathType Leaf)) { throw 'The CST Node.js runtime is missing.' }
-    . (Join-Path $PSScriptRoot 'Thread-Link.ps1')
-    . (Join-Path $PSScriptRoot 'Terminal-Focus.ps1')
-    . (Join-Path $PSScriptRoot 'CST-Panel.ps1')
-    . (Join-Path $PSScriptRoot 'CST-Presence.ps1')
-    Initialize-CodexTerminalFocus
-    if (!('CodexSharedSession.ClipboardLinkListener' -as [type])) { Add-Type -TypeDefinition (Get-CstClipboardListenerSource -Path (Join-Path $PSScriptRoot 'Watch-Chat-Link.ps1')) }
-    Initialize-CstPanel
-    [void][Windows.Forms.Application]::SetHighDpiMode([Windows.Forms.HighDpiMode]::PerMonitorV2)
-    [Windows.Forms.Application]::EnableVisualStyles()
-    $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $mutex = [Threading.Mutex]::new($false, ('Local\CSTIndependent-' + $userSid))
-    $ownsMutex = $false; $listener = $null; $tray = $null; $icon = $null; $menu = $null; $panel = $null; $heartbeat = $null; $runDirectory = $null
+    $instance = $null; $listener = $null; $tray = $null; $icon = $null; $menu = $null; $panel = $null; $heartbeat = $null; $runDirectory = $null
     $state = @{ Exit = $false; Desktop = $null; LastThread = ''; LastLaunch = [DateTime]::MinValue; Text = $null }
     try {
-        try { $ownsMutex = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
-        if (!$ownsMutex) { return }
+        $instance = New-CstTrayInstance
+        if (!$instance.OwnsMutex) { return }
+        # Only the owner loads native UI/listener code. Repeated double-clicks
+        # signal its panel immediately instead of compiling another tray process.
+        if (!(Test-Path -LiteralPath $NodeExecutable -PathType Leaf)) { throw 'The CST Node.js runtime is missing.' }
+        . (Join-Path $PSScriptRoot 'Thread-Link.ps1')
+        . (Join-Path $PSScriptRoot 'Terminal-Focus.ps1')
+        . (Join-Path $PSScriptRoot 'CST-Panel.ps1')
+        . (Join-Path $PSScriptRoot 'CST-Presence.ps1')
+        Initialize-CodexTerminalFocus
+        if (!('CodexSharedSession.ClipboardLinkListener' -as [type])) { Add-Type -TypeDefinition (Get-CstClipboardListenerSource -Path (Join-Path $PSScriptRoot 'Watch-Chat-Link.ps1')) }
+        Initialize-CstPanel
+        [void][Windows.Forms.Application]::SetHighDpiMode([Windows.Forms.HighDpiMode]::PerMonitorV2)
+        [Windows.Forms.Application]::EnableVisualStyles()
         $runtimeRoot = Join-Path $env:LOCALAPPDATA 'SessionBridge\independent'
         $runDirectory = New-CstRunDirectory -RuntimeRoot $runtimeRoot
         # .NET ticks exceed JavaScript's exact integer range. Keep the generation
@@ -160,8 +191,10 @@ function Start-CstTray {
         })
         $tray.add_BalloonTipClicked({ $panel.ShowPanel() })
         # Windows may suppress this under Focus Assist or notification settings.
-        # Show it once per tray process, without bringing a window to the foreground.
+        # Show it once per tray process. Explicit launches also open the panel,
+        # so a suppressed notification never makes CST appear unresponsive.
         $tray.ShowBalloonTip(5000, 'Codex Session to Terminal', $state.Text.Running, [Windows.Forms.ToolTipIcon]::Info)
+        Show-CstRequestedPanel -Instance $instance -Panel $panel -Initial
         $onTextChanged = [Action[string]] {
             param([string]$Text)
             $thread = ConvertFrom-CodexLocalThreadLink -Text $Text
@@ -178,6 +211,7 @@ function Start-CstTray {
         }
         $nextCheck = [DateTime]::MinValue
         while (!$state.Exit -and !(Test-Path -LiteralPath (Join-Path $runDirectory 'stop.flag'))) {
+            Show-CstRequestedPanel -Instance $instance -Panel $panel
             if ([DateTime]::UtcNow -ge $nextCheck) {
                 $desktop = $null
                 try { $desktop = Get-CstRunningDesktop -PreferredPid $(if ($state.Desktop) { $state.Desktop.Id } else { 0 }) } catch { }
@@ -209,8 +243,7 @@ function Start-CstTray {
         if ($tray) { $tray.Visible = $false; $tray.Dispose() }
         if ($menu) { $menu.Dispose() }
         if ($icon) { $icon.Dispose() }
-        if ($ownsMutex) { $mutex.ReleaseMutex() }
-        $mutex.Dispose()
+        if ($instance) { Close-CstTrayInstance -Instance $instance }
     }
 }
 

@@ -29,6 +29,36 @@ if ($null -ne (Select-CstDesktopProcess -Processes $records -PackageLocations @(
 if ($null -ne (Select-CstDesktopProcess -Processes @($records[2],$records[3]) -PackageLocations @($package))) { throw 'Child or unrelated process was accepted.' }
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('cst-tray-test-' + [Guid]::NewGuid().ToString('N'))
+$children = @()
+
+function Wait-CstTestFile {
+    param([Parameter(Mandatory)][string]$Path)
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (!(Test-Path -LiteralPath ($Path + '.published'))) {
+        foreach ($child in $children) {
+            if ($child.HasExited -and $child.ExitCode -ne 0) {
+                throw ('Isolated instance exited before its checkpoint: ' + $child.StandardError.ReadToEnd())
+            }
+        }
+        if ([DateTime]::UtcNow -ge $deadline) { throw "Timed out waiting for the isolated instance test: $([IO.Path]::GetFileName($Path))" }
+        Start-Sleep -Milliseconds 20
+    }
+}
+
+function Start-CstHiddenTestProcess {
+    param([Parameter(Mandatory)][string]$Code)
+    $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Code)))) {
+        $info.ArgumentList.Add($argument)
+    }
+    return [Diagnostics.Process]::Start($info)
+}
+
 try {
     $first = New-CstRunDirectory -RuntimeRoot $testRoot
     Stop-CstRun -ControlDirectory $first
@@ -42,11 +72,100 @@ try {
     $failed = $false
     try { Get-CstClipboardListenerSource -Path $fixture | Out-Null } catch { $failed = $true }
     if (!$failed) { throw 'Nonliteral listener source was accepted.' }
+
+    # Exercise the actual ownership/event helpers in two hidden OS processes.
+    # A mock presenter counts requests without creating a form, clipboard
+    # listener, hotkey or any foreground-window operation.
+    $instanceName = 'Local\CSTActivationTest-' + [Guid]::NewGuid().ToString('N')
+    $childTemplate = @'
+$ErrorActionPreference = 'Stop'
+. __TRAY_SOURCE__ -DefinitionsOnly
+$root = __TEST_ROOT__
+$instanceName = __INSTANCE_NAME__
+$slot = __SLOT__
+$instance = $null
+function Publish([string]$name, [string]$text) {
+    $destination = Join-Path $root $name
+    [IO.File]::WriteAllText($destination, $text)
+    [IO.File]::WriteAllText(($destination + '.published'), 'ready')
+}
+function Wait-File([string]$name) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (!(Test-Path -LiteralPath (Join-Path $root $name))) {
+        if ([DateTime]::UtcNow -ge $deadline) { throw "Child timed out: $name" }
+        Start-Sleep -Milliseconds 20
+    }
+}
+try {
+    Publish ('ready-' + $slot) 'ready'
+    Wait-File 'race-start'
+    $instance = New-CstTrayInstance -Name $instanceName
+    Publish ('role-' + $slot + '.json') (@{ owner = $instance.OwnsMutex } | ConvertTo-Json -Compress)
+    if ($instance.OwnsMutex) {
+        $presenter = [pscustomobject]@{ Count = 0 }
+        $presenter | Add-Member -MemberType ScriptMethod -Name ShowPanel -Value { $this.Count++ }
+        # Do not consume the event until the duplicate has exited. This models
+        # slow native/UI initialization and catches lost startup activations.
+        Wait-File 'consume-first'
+        Show-CstRequestedPanel -Instance $instance -Panel $presenter -Initial
+        Show-CstRequestedPanel -Instance $instance -Panel $presenter
+        Show-CstRequestedPanel -Instance $instance -Panel $presenter
+        Publish 'consumed-first' ([string]$presenter.Count)
+        Wait-File 'consume-second'
+        Show-CstRequestedPanel -Instance $instance -Panel $presenter
+        Show-CstRequestedPanel -Instance $instance -Panel $presenter
+        Publish 'consumed-second' ([string]$presenter.Count)
+        Wait-File 'stop-owner'
+    }
 } finally {
+    if ($instance) { Close-CstTrayInstance -Instance $instance }
+}
+'@
+    $sourceLiteral = "'" + (Join-Path $PSScriptRoot 'CST-Tray.ps1').Replace("'", "''") + "'"
+    $rootLiteral = "'" + $testRoot.Replace("'", "''") + "'"
+    foreach ($slot in @('one', 'two')) {
+        $code = $childTemplate.Replace('__TRAY_SOURCE__', $sourceLiteral).Replace('__TEST_ROOT__', $rootLiteral).Replace('__INSTANCE_NAME__', ("'" + $instanceName + "'")).Replace('__SLOT__', ("'" + $slot + "'"))
+        $children += Start-CstHiddenTestProcess -Code $code
+    }
+    foreach ($slot in @('one', 'two')) { Wait-CstTestFile -Path (Join-Path $testRoot ('ready-' + $slot)) }
+    [IO.File]::WriteAllText((Join-Path $testRoot 'race-start'), 'go')
+    foreach ($slot in @('one', 'two')) { Wait-CstTestFile -Path (Join-Path $testRoot ('role-' + $slot + '.json')) }
+    $roles = @(foreach ($slot in @('one', 'two')) { Get-Content -LiteralPath (Join-Path $testRoot ('role-' + $slot + '.json')) -Raw | ConvertFrom-Json })
+    if (@($roles | Where-Object owner).Count -ne 1) { throw 'Competing processes did not elect exactly one tray owner.' }
+    $duplicateIndex = if ($roles[0].owner) { 1 } else { 0 }
+    if (!$children[$duplicateIndex].WaitForExit(5000) -or $children[$duplicateIndex].ExitCode -ne 0) { throw 'The duplicate instance did not signal and exit successfully.' }
+    [IO.File]::WriteAllText((Join-Path $testRoot 'consume-first'), 'go')
+    Wait-CstTestFile -Path (Join-Path $testRoot 'consumed-first')
+    if ([IO.File]::ReadAllText((Join-Path $testRoot 'consumed-first')) -ne '2') { throw 'First launch or activation during initialization was lost/repeated.' }
+
+    # Signals after consumption must work again. Multiple requests while hidden
+    # may coalesce into one show request, never an additional tray owner.
+    foreach ($attempt in 1..2) {
+        $duplicate = New-CstTrayInstance -Name $instanceName
+        try { if ($duplicate.OwnsMutex) { throw 'A later launch replaced the live tray owner.' } }
+        finally { Close-CstTrayInstance -Instance $duplicate }
+    }
+    [IO.File]::WriteAllText((Join-Path $testRoot 'consume-second'), 'go')
+    Wait-CstTestFile -Path (Join-Path $testRoot 'consumed-second')
+    if ([IO.File]::ReadAllText((Join-Path $testRoot 'consumed-second')) -ne '3') { throw 'Repeated launch did not reactivate once after the previous request was consumed.' }
+    [IO.File]::WriteAllText((Join-Path $testRoot 'stop-owner'), 'stop')
+    foreach ($child in $children) {
+        if (!$child.WaitForExit(5000) -or $child.ExitCode -ne 0) { throw 'An isolated tray instance did not exit cleanly.' }
+        if ($child.StandardError.ReadToEnd()) { throw 'An isolated tray instance reported an error.' }
+    }
+    $replacement = New-CstTrayInstance -Name $instanceName
+    try {
+        if (!$replacement.OwnsMutex -or $replacement.Activation.WaitOne(0)) { throw 'Owner shutdown did not release its handles or left a stale activation.' }
+    } finally { Close-CstTrayInstance -Instance $replacement }
+} finally {
+    foreach ($child in $children) {
+        if (!$child.HasExited) { $child.Kill(); [void]$child.WaitForExit(5000) }
+        $child.Dispose()
+    }
     $resolved = [IO.Path]::GetFullPath($testRoot)
     $parent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
     if ([IO.Path]::GetDirectoryName($resolved).Equals($parent, [StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved) -match '^cst-tray-test-[a-f0-9]{32}$' -and (Test-Path -LiteralPath $resolved)) {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 }
-'Independent CST tray: native source, process identity selection, per-run shutdown and literal arguments passed; no UI launched.'
+'Independent CST tray: native source, process selection, per-run shutdown, literal arguments and two-process startup/reactivation passed; no UI launched.'

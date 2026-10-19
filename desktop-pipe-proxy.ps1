@@ -8,6 +8,8 @@ try {
     if (!$allowed.Count) { throw 'The installed OpenAI.Codex package was not found.' }
     Add-Type -TypeDefinition @'
 using System;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
@@ -16,6 +18,10 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 public static class CstVerifiedPipe {
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr GetStdHandle(int standardHandle);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool WriteFile(IntPtr handle, IntPtr buffer, uint length, out uint written, IntPtr overlapped);
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint processId);
     [DllImport("kernel32.dll", SetLastError=true)]
@@ -42,6 +48,36 @@ public static class CstVerifiedPipe {
             }
         } finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
     }
+    public static async Task CopyToStdout(Stream input) {
+        // Node's Windows child stdout is a nonblocking pipe. ConsoleStream's
+        // WriteFile wrapper can report success after only part of a large write
+        // and discard the unwritten tail. Respect the native byte count instead.
+        IntPtr output = GetStdHandle(-11);
+        if (output == IntPtr.Zero || output == new IntPtr(-1)) throw new IOException("Binary output is unavailable.");
+        var buffer = new byte[81920];
+        var pinned = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+        try {
+            int count;
+            while ((count = await input.ReadAsync(buffer, 0, buffer.Length)) != 0) {
+                int offset = 0;
+                var stalled = Stopwatch.StartNew();
+                while (offset < count) {
+                    uint written;
+                    if (!WriteFile(output, IntPtr.Add(pinned.AddrOfPinnedObject(), offset), (uint)(count - offset), out written, IntPtr.Zero)) {
+                        throw new Win32Exception(Marshal.GetLastWin32Error());
+                    }
+                    if (written > count - offset) throw new IOException("Invalid binary output byte count.");
+                    if (written == 0) {
+                        if (stalled.ElapsedMilliseconds > 30000) throw new IOException("Binary output remained blocked.");
+                        await Task.Delay(1);
+                    } else {
+                        offset += (int)written;
+                        stalled.Restart();
+                    }
+                }
+            }
+        } finally { pinned.Free(); }
+    }
     public static async Task Run(string[] allowed) {
         // A same-name hostile server must not be able to impersonate this user
         // while we are still establishing and verifying the connection.
@@ -50,16 +86,15 @@ public static class CstVerifiedPipe {
             Verify(pipe, allowed); // Same handle used for verification and all subsequent traffic.
             Console.Error.WriteLine("CST_PIPE_VERIFIED");
             Console.Error.Flush();
-            var input = Console.OpenStandardInput(); var output = Console.OpenStandardOutput();
-            var upstream = input.CopyToAsync(pipe); var downstream = pipe.CopyToAsync(output);
+            var input = Console.OpenStandardInput();
+            var upstream = input.CopyToAsync(pipe); var downstream = CopyToStdout(pipe);
             var completed = await Task.WhenAny(upstream, downstream);
             await completed;
-            await output.FlushAsync();
         }
     }
 }
 '@
-    [CstVerifiedPipe]::Run([string[]]$allowed).GetAwaiter().GetResult()
+    [void][CstVerifiedPipe]::Run([string[]]$allowed).GetAwaiter().GetResult()
 } catch {
     [Console]::Error.WriteLine('CST Desktop connection failed: ' + $_.Exception.Message)
     exit 1

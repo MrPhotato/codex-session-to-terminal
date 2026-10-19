@@ -80,20 +80,25 @@ function latestTurn(state) {
  * connect resolves only after a validated snapshot. No write is ever replayed.
  */
 export class DesktopIpcClient extends EventEmitter {
-  constructor({ transportFactory, queueSender, timeoutMs = 5000, connectTimeoutMs = 15000, maxFrameBytes = 64 * 1024 * 1024, maxInputBytes = 256 * 1024 } = {}) {
+  constructor({ transportFactory, queueSender, timeoutMs = 5000, connectTimeoutMs = 15000,
+    snapshotTimeoutMs = Math.min(60000, timeoutMs * 3), snapshotRetryMs = Math.min(2000, timeoutMs), maxSnapshotAttempts = 3,
+    maxFrameBytes = 64 * 1024 * 1024, maxInputBytes = 256 * 1024 } = {}) {
     super();
     if (typeof transportFactory !== 'function') throw failure('VERIFIED_TRANSPORT_REQUIRED', 'An authenticated Desktop pipe transport is required.');
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new TypeError('Invalid timeoutMs.');
     if (!Number.isSafeInteger(connectTimeoutMs) || connectTimeoutMs < 1 || connectTimeoutMs > 60000) throw new TypeError('Invalid connectTimeoutMs.');
+    if (!Number.isSafeInteger(snapshotTimeoutMs) || snapshotTimeoutMs < 1 || snapshotTimeoutMs > 60000) throw new TypeError('Invalid snapshotTimeoutMs.');
+    if (!Number.isSafeInteger(snapshotRetryMs) || snapshotRetryMs < 1 || snapshotRetryMs > 60000) throw new TypeError('Invalid snapshotRetryMs.');
+    if (!Number.isSafeInteger(maxSnapshotAttempts) || maxSnapshotAttempts < 1 || maxSnapshotAttempts > 10) throw new TypeError('Invalid maxSnapshotAttempts.');
     if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 1024 || maxFrameBytes > 268435456) throw new TypeError('Invalid maxFrameBytes.');
     if (!Number.isSafeInteger(maxInputBytes) || maxInputBytes < 1 || maxInputBytes > 1024 * 1024) throw new TypeError('Invalid maxInputBytes.');
-    this.options = { transportFactory, queueSender, timeoutMs, connectTimeoutMs, maxFrameBytes, maxInputBytes };
+    this.options = { transportFactory, queueSender, timeoutMs, connectTimeoutMs, snapshotTimeoutMs, snapshotRetryMs, maxSnapshotAttempts, maxFrameBytes, maxInputBytes };
     this._status = { phase: 'idle', ready: false };
     this._state = null; this._owner = null; this._revision = null;
     this._pending = new Map(); this._socket = null; this._clientId = null;
     this._closed = true; this._generation = 0; this._sending = false;
     this._header = Buffer.alloc(4); this._headerUsed = 0; this._body = null; this._bodyUsed = 0;
-    this._snapshotTimer = null; this._readyWaiter = null; this._discovering = false;
+    this._snapshotTimer = null; this._snapshotRetryTimer = null; this._readyWaiter = null; this._discovering = false;
   }
 
   get state() { return this._state; }
@@ -137,7 +142,10 @@ export class DesktopIpcClient extends EventEmitter {
       this._socket = socket;
       socket.on('data', chunk => {
         if (this._closed || generation !== this._generation) return;
-        try { this._parse(chunk); } catch { this._disconnect(failure('PROTOCOL_ERROR', 'Desktop sent an unsupported or invalid frame.')); }
+        try { this._parse(chunk); } catch (error) {
+          this._disconnect(['PROTOCOL_ERROR', 'FRAME_TOO_LARGE', 'UNSUPPORTED_VERSION'].includes(error?.code)
+            ? error : failure('PROTOCOL_ERROR', 'Desktop sent an unsupported or invalid frame.'));
+        }
       });
       socket.on('error', () => { if (generation === this._generation) this._disconnect(failure('TRANSPORT_ERROR', 'Desktop connection failed.')); });
       socket.on('close', () => { if (generation === this._generation) this._disconnect(failure('DISCONNECTED', 'Desktop connection closed.')); });
@@ -234,12 +242,29 @@ export class DesktopIpcClient extends EventEmitter {
     if (this._closed || !this._owner) return;
     if (this._snapshotTimer) return;
     this._setStatus('syncing');
-    // Repeating following=true explicitly requests a fresh snapshot; no owner change.
+    // Desktop explicitly sends a current snapshot even when this client already
+    // follows the thread. Only this read-only subscription may be repeated:
+    // a lost/late initial snapshot must not require the user to reopen the TUI.
+    // The overall deadline never moves and a request/write is never replayed.
     this._snapshotTimer = setTimeout(() => {
       this._snapshotTimer = null;
       this._disconnect(failure('SNAPSHOT_TIMEOUT', 'Desktop did not provide a current snapshot.'));
-    }, this.options.timeoutMs);
-    this._follow(true);
+    }, this.options.snapshotTimeoutMs);
+    let attempts = 0;
+    const requestSnapshot = () => {
+      this._snapshotRetryTimer = null;
+      if (this._closed || !this._owner || !this._snapshotTimer) return;
+      try { this._follow(true); } catch (error) { this._disconnect(error); return; }
+      if (++attempts < this.options.maxSnapshotAttempts && this._snapshotTimer) {
+        this._snapshotRetryTimer = setTimeout(requestSnapshot, this.options.snapshotRetryMs);
+      }
+    };
+    requestSnapshot();
+  }
+
+  _clearSnapshotTimers() {
+    clearTimeout(this._snapshotTimer); this._snapshotTimer = null;
+    clearTimeout(this._snapshotRetryTimer); this._snapshotRetryTimer = null;
   }
 
   _receive(message) {
@@ -261,7 +286,7 @@ export class DesktopIpcClient extends EventEmitter {
     if (message.targetClientIds && (!Array.isArray(message.targetClientIds) || !message.targetClientIds.includes(this._clientId))) return;
     const params = message.params;
     if (message.method === 'client-status-changed' && message.version === 0 && message.sourceClientId === this._owner?.clientId && params?.clientId === this._owner?.clientId && params.status === 'disconnected') {
-      clearTimeout(this._snapshotTimer); this._snapshotTimer = null;
+      this._clearSnapshotTimers();
       this._owner = null; this._revision = null;
       this._setStatus('owner-unavailable');
       const error = failure('OWNER_DISCONNECTED', 'The Desktop owner disconnected.');
@@ -285,7 +310,7 @@ export class DesktopIpcClient extends EventEmitter {
       if (!object(change.conversationState) || change.conversationState.id !== this._threadId || !Array.isArray(change.conversationState.turns)) throw failure('PROTOCOL_ERROR', 'Desktop snapshot belongs to a different or invalid conversation.');
       if (this._revision !== null && change.revision < this._revision) return;
       this._state = change.conversationState; this._revision = change.revision;
-      clearTimeout(this._snapshotTimer); this._snapshotTimer = null;
+      this._clearSnapshotTimers();
       this._setStatus('ready');
       this._readyWaiter?.resolve(); this._readyWaiter = null;
       this.emit('state', this._state, { revision: this._revision, acceptedTextChanges: [] });
@@ -340,7 +365,7 @@ export class DesktopIpcClient extends EventEmitter {
   _disconnect(error) {
     if (this._closed) return;
     this._closed = true; ++this._generation; this._abort?.abort();
-    clearTimeout(this._snapshotTimer); this._snapshotTimer = null;
+    this._clearSnapshotTimers();
     this._rejectPending(error);
     this._readyWaiter?.reject(error); this._readyWaiter = null;
     this._socket?.destroy(); this._socket = null;
