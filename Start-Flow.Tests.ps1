@@ -33,11 +33,12 @@ foreach ($case in $cases) {
 
 # Exercise the real action dispatch with command stubs. These cases must stop
 # before the launcher reads or writes any private configuration or starts a process.
+foreach ($commandLine in @('fixture ChatGPT.exe', $null)) {
 foreach ($action in @('Start', 'Prepare', 'Launch')) {
     $caught = ''
     try {
         & {
-            function Get-CimInstance { [pscustomobject]@{ CommandLine = 'fixture ChatGPT.exe' } }
+            function Get-CimInstance { [pscustomobject]@{ CommandLine = $commandLine } }
             function Get-AppxPackage { throw 'Private preparation was reached despite the running Desktop.' }
             function Start-Process { throw 'An application launch was attempted.' }
             & (Join-Path $PSScriptRoot 'production.ps1') -Action $action
@@ -45,16 +46,22 @@ foreach ($action in @('Start', 'Prepare', 'Launch')) {
     } catch { $caught = $_.ToString() }
     if ($caught -notlike '*ChatGPT is already running*') { throw "Existing Desktop guard failed for $action." }
 }
+}
 
 $caught = ''
 try {
     & {
         function Get-CimInstance { }
-        function Get-AppxPackage { [pscustomobject]@{ Version = [Version]'0.0.0.1' } }
+        function Get-AppxPackage {
+            [pscustomobject]@{
+                Version = [Version]'99.99.99.99'
+                InstallLocation = Join-Path ([IO.Path]::GetTempPath()) ('session-bridge-missing-package-' + [Guid]::NewGuid().ToString('N'))
+            }
+        }
         function Start-Process { throw 'An application launch was attempted.' }
         & (Join-Path $PSScriptRoot 'production.ps1') -Action Start
     }
 } catch { $caught = $_.ToString() }
-if ($caught -notlike '*until the launcher is revalidated*') { throw 'Start bypassed the Desktop version gate.' }
+if ($caught -notlike '*unsupported application layout*') { throw 'Start did not reject an unsupported package layout before setup or launch.' }
 
-'Start checks passed: running Desktop blocks all mutations; prepare precedes launch; failures and version mismatch stop the flow. Command stubs only.'
+'Start checks passed: running Desktop and unreadable command lines block all mutations; setup precedes launch; failures and unsupported package layouts stop the flow. Command stubs only.'

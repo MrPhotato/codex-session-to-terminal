@@ -14,4 +14,5 @@ foreach ($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1') {
 & (Join-Path $PSScriptRoot 'Dependencies.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Execution-Policy.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Runtime-Discovery.Tests.ps1')
+& (Join-Path $PSScriptRoot 'Cli-Compatibility.Tests.ps1')
 'All PowerShell checks passed. No Desktop, real CLI session, profile, or credentials were used.'

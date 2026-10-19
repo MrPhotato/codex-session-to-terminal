@@ -73,10 +73,12 @@ test('loopback RPC performs handshake and refuses interactive server requests', 
   }
 });
 
-test('release retains exact version gates and the default terminal mode', async () => {
+test('release checks capabilities without pinning the Desktop version and keeps the default terminal mode', async () => {
   const launcher = await readFile(new URL('../production.ps1', import.meta.url), 'utf8');
-  assert(launcher.includes("$expectedDesktop = '26.1013.3656.0'"));
-  assert(launcher.includes("$expectedCli = '0.163.0-alpha.10.2'"));
+  assert(!launcher.includes('$expectedDesktop'));
+  assert(!launcher.includes('until the launcher is revalidated'));
+  assert(launcher.includes('Assert-SessionBridgeCliCapabilities'));
+  assert(launcher.includes('check-startup.mjs'));
   assert(!launcher.includes('--no-alt-screen'));
   assert(launcher.includes("'SessionBridge'"));
 });

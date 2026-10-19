@@ -4,7 +4,7 @@
 
 在 Windows 上，把当前 ChatGPT 本地 Work / Codex 会话接到旁边的终端。桌面与 CLI 使用同一个后台、同一条会话，可以继续收发消息和观察任务进度。
 
-**Preview · Windows x64 · 非官方集成。** 本项目依赖 Desktop 的内部启动机制和实验性 App Server 接口，按具体版本验证兼容性。它不是独立聊天客户端，不包含官方 Desktop 或 CLI 程序。
+**Preview · Windows x64 · 非官方集成。** 本项目依赖 Desktop 的内部启动机制和实验性 App Server 接口。启动时检查实际连接能力，不按 Desktop 的完整版本号拦截更新。它不是独立聊天客户端，不包含官方 Desktop 或 CLI 程序。
 
 源码仓库：[MrPhotato/codex-session-to-terminal](https://github.com/MrPhotato/codex-session-to-terminal)。
 
@@ -25,20 +25,21 @@
 | 组件 | 当前要求 |
 | --- | --- |
 | Windows | x64 |
-| ChatGPT Desktop / OpenAI.Codex 包 | `26.1013.3656.0`，已完成正常安装与登录 |
-| Desktop 内置 CLI 与独立 CLI | `0.163.0-alpha.10.2` |
+| ChatGPT Desktop / OpenAI.Codex 包 | 已完成正常安装与登录；启动时自动发现当前包路径 |
+| Desktop 内置 CLI | 使用当前包自带的后台程序，检查所需 WebSocket 与鉴权能力 |
+| 独立终端 CLI | 安装锁定的 `0.163.0-alpha.10.2`，检查远程连接参数 |
 | PowerShell | 安装包自带 7.6.5；源码部署需 7.4 或更新版本 |
 | Node.js / npm | 安装包自带 Node.js 24.22.0 和 npm；源码部署需 Node.js 22 或更新版本 |
 | C# 编译器 | Windows .NET Framework 4 的 `csc.exe` |
 | Windows Terminal | 推荐；没有时使用 PowerShell 窗口 |
 
-版本检查会拒绝未验证的 Desktop。不要只改版本号来绕过检查；客户端升级后，应先用原入口正常使用，再重新验证连接兼容性。
+Desktop 更新后无需手动修改版本号或安装目录。每次共享启动都会重新发现当前包、检查后台和终端的连接参数、刷新启动配置，并验证新后台的鉴权连接与会话列表接口。启动检查通过不等于所有未来接口都永久兼容；若接口确实变化，会提示具体缺失能力或连接失败，不关闭已经启动的 Desktop。`production.ps1 -Action Check` 可单独检查本机组件，不启动 Desktop 或修改连接配置。
 
 ## 开始使用
 
 ### 使用安装包
 
-1. 下载并运行 `Codex-Session-to-Terminal-0.1.0-preview.1-windows-x64-setup.exe`。安装在当前用户目录，无需管理员权限。
+1. 下载并运行 `Codex-Session-to-Terminal-0.1.0-preview.2-windows-x64-setup.exe`。安装在当前用户目录，无需管理员权限。
 2. 先正常安装、打开并登录兼容版本的 ChatGPT。完成正在运行的任务后，正常退出 ChatGPT。
 3. 从开始菜单打开 **Codex Session to Terminal**。首次启动需要联网下载锁定版本的官方 CLI 和相关依赖，准备成功后才打开 ChatGPT。
 4. 在有键盘焦点的本地聊天中按 **Ctrl+Alt+L**，打开同步终端；输入前点击终端。

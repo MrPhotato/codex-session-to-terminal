@@ -59,7 +59,7 @@ try {
     if ((Get-Content -LiteralPath (Join-Path $payload 'runtime\node\LICENSE') -Raw).Trim() -cne 'runtime-license-sentinel') {
         throw 'Bundled runtime files were changed.'
     }
-    if (!$include.Contains('Start.cmd') -or !$include.Contains('Dependencies.ps1') -or !$include.Contains('Execution-Policy.ps1')) { throw 'First-start entry files are missing.' }
+    if (!$include.Contains('Start.cmd') -or !$include.Contains('Dependencies.ps1') -or !$include.Contains('Execution-Policy.ps1') -or !$include.Contains('check-startup.mjs')) { throw 'First-start entry files are missing.' }
 
     # A tiny command fixture has no PE version resource. Its supported version
     # response must pass; a different version or failed probe must still fail.

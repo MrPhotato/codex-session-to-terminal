@@ -1,5 +1,5 @@
 #requires -Version 5.1
-param([ValidateSet('Start','Prepare','Launch','Status','OpenCli','StopShortcut')][string]$Action = 'Status')
+param([ValidateSet('Start','Prepare','Launch','Check','Status','OpenCli','StopShortcut')][string]$Action = 'Status')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Discovery.ps1')
 . (Join-Path $PSScriptRoot 'Execution-Policy.ps1')

@@ -13,7 +13,7 @@ using System.Web.Script.Serialization;
 public static class CodexSharedShim
 {
     // Also works when a desktop tool keeps CODEX_CLI_PATH but filters our config
-    // variable. Prepare generates this local path after exact version checking.
+    // variable. Prepare discovers the current package and checks its capabilities.
     // The generated file lives in protected local build output, outside source.
     const string FallbackCliPath = SharedShimPaths.Cli;
     static readonly HashSet<string> GlobalValues = new HashSet<string> {

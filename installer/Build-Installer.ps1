@@ -6,7 +6,7 @@ param(
     [string]$CompilerPath,
     [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'output\installer'),
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$')]
-    [string]$Version = '0.1.0-preview.1',
+    [string]$Version = '0.1.0-preview.2',
     [switch]$ValidateOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -18,7 +18,7 @@ $sourceFiles = @(
     'Start.cmd', 'Start-Flow.ps1', 'Dependencies.ps1', 'Execution-Policy.ps1', 'bootstrap.ps1', 'production.ps1',
     'Discovery.ps1', 'Build-Shim.ps1', 'CodexSharedShim.cs',
     'Launcher-Environment.ps1', 'Watch-Chat-Link.ps1', 'Terminal-Focus.ps1',
-    'Thread-Link.ps1', 'bridge-shim.mjs', 'rpc-client.mjs', 'check-live.mjs',
+    'Thread-Link.ps1', 'bridge-shim.mjs', 'rpc-client.mjs', 'check-live.mjs', 'check-startup.mjs',
     'Enable-Normal-Desktop.cmd', 'Open-Current-Chat.cmd', 'Prepare.cmd',
     'Status.cmd', 'Stop-Shortcut.cmd', 'package.json', 'package-lock.json',
     'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md', 'assets\icon.ico', 'assets\icon.png'
