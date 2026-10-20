@@ -19,7 +19,7 @@ $sourceFiles = @(
     'CST-Panel.ps1', 'CST-Panel.cs', 'CST-TrayMenu.cs', 'CST-Presence.ps1', 'cst-presence.mjs',
     'desktop-ipc.mjs', 'cst-transport.mjs', 'cst-state.mjs', 'cst-queue.mjs', 'cst-terminal.mjs', 'LEGACY.md',
     'cst-native-terminal.mjs', 'native-cli-bridge.mjs', 'readonly-metadata.mjs',
-    'desktop-control.mjs', 'desktop-events.mjs', 'snapshot-history.mjs', 'protocol-validation.mjs',
+    'desktop-control.mjs', 'desktop-events.mjs', 'snapshot-history.mjs', 'lazy-history.mjs', 'protocol-validation.mjs',
     'protocol-schema\LICENSE', 'protocol-schema\NOTICE', 'protocol-schema\ServerNotification.json', 'protocol-schema\v2\ThreadResumeResponse.json',
     'protocol-schema\v2\ThreadTurnsListResponse.json', 'protocol-schema\v2\ThreadItemsListResponse.json',
     'Start.cmd', 'Start-Flow.ps1', 'Dependencies.ps1', 'Execution-Policy.ps1', 'bootstrap.ps1', 'production.ps1',

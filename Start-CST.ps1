@@ -8,7 +8,7 @@ $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'Dependencies.ps1')
 $runtime = Get-SessionBridgePowerShell
 $node = Get-SessionBridgeNode
-foreach ($name in @('CST-Tray.ps1','CST-Panel.ps1','CST-Panel.cs', 'CST-TrayMenu.cs','CST-Presence.ps1','cst-presence.mjs','cst-terminal.mjs','cst-native-terminal.mjs','native-cli-bridge.mjs','readonly-metadata.mjs','desktop-control.mjs','desktop-events.mjs','snapshot-history.mjs','protocol-validation.mjs','protocol-schema/ServerNotification.json','protocol-schema/v2/ThreadResumeResponse.json','protocol-schema/v2/ThreadTurnsListResponse.json','protocol-schema/v2/ThreadItemsListResponse.json','Thread-Link.ps1','Terminal-Focus.ps1','Watch-Chat-Link.ps1')) {
+foreach ($name in @('CST-Tray.ps1','CST-Panel.ps1','CST-Panel.cs', 'CST-TrayMenu.cs','CST-Presence.ps1','cst-presence.mjs','cst-terminal.mjs','cst-native-terminal.mjs','native-cli-bridge.mjs','readonly-metadata.mjs','desktop-control.mjs','desktop-events.mjs','snapshot-history.mjs','lazy-history.mjs','protocol-validation.mjs','protocol-schema/ServerNotification.json','protocol-schema/v2/ThreadResumeResponse.json','protocol-schema/v2/ThreadTurnsListResponse.json','protocol-schema/v2/ThreadItemsListResponse.json','Thread-Link.ps1','Terminal-Focus.ps1','Watch-Chat-Link.ps1')) {
     if (!(Test-Path -LiteralPath (Join-Path $PSScriptRoot $name) -PathType Leaf)) { throw "Codex Session to Terminal is incomplete: $name is missing." }
 }
 $policy = Get-SessionBridgeRuntimePolicy -RuntimePath $runtime

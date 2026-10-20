@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import WebSocket from 'ws';
 import { createNativeCliBridge, validThreadId } from '../native-cli-bridge.mjs';
-import { DesktopEventProjector, apiItems } from '../desktop-events.mjs';
+import { DesktopEventProjector, apiItems, apiTurn } from '../desktop-events.mjs';
 import { createDesktopController, validateInheritedSettings, assertControlReady } from '../desktop-control.mjs';
 import { METADATA_METHODS } from '../readonly-metadata.mjs';
 import { SnapshotHistory } from '../snapshot-history.mjs';
@@ -264,5 +264,118 @@ test('a lost Desktop owner closes the client and never retries a write', { timeo
     await closed;
     assert.equal(bridge.evidence.ownerUnchanged, false); assert.equal(fixtures.writes.length, 0);
     assert.equal(await rejectedUpgrade(bridge.endpoint, { Authorization: `Bearer ${bridge.token}` }), 401);
+  } finally { await bridge.close(); }
+});
+
+function paginatedBridgeFixtures(threadId) {
+  const fixtures = isolatedBridgeFixtures(threadId), reads = [], read = fixtures.metadata.call.bind(fixtures.metadata);
+  const state = fixtures.desktop.state, history = state.turnHistory.history;
+  const recent = Array.from({ length: 5 }, (_, index) => ({
+    turnId: `recent-${index}`, status: index === 4 ? 'inProgress' : 'completed', turnStartedAtMs: index + 1000,
+    items: [{ id: `item-${index}`, type: 'agentMessage', phase: 'commentary', text: index === 4 ? 'prefix' : 'older' }],
+  }));
+  history.islands[0].entries = recent.map(turn => ({ value: turn.turnId }));
+  history.islands[0].olderBoundary = { status: 'available', handle: { cursor: 'native-older-turns' } };
+  history.entitiesByKey = Object.fromEntries(recent.map(turn => [turn.turnId, turn]));
+  state.threadRuntimeStatus = { type: 'active', activeFlags: [] };
+  fixtures.desktop.requestFollower = async (method, params) => {
+    fixtures.writes.push({ method, params });
+    return { result: { result: { turnId: 'recent-4' } } };
+  };
+  fixtures.metadata.call = async (method, params) => {
+    if (method === 'thread/read') {
+      const result = await read(method, params);
+      result.thread.historyMode = 'paginated';
+      return result;
+    }
+    reads.push({ method, params });
+    assert.equal(params.threadId, threadId);
+    if (method === 'thread/turns/list') {
+      assert.equal(params.cursor, 'native-older-turns');
+      return { data: [apiTurn({ turnId: 'old', status: 'completed', items: [], turnStartedAtMs: 1 }, { emptyItems: true })], nextCursor: null };
+    }
+    assert.equal(method, 'thread/items/list');
+    assert.equal(params.turnId, 'old');
+    return { data: [{ turnId: 'old', item: { type: 'agentMessage', id: 'old-item', text: 'old text', phase: 'final_answer' }, startedAtMs: null, completedAtMs: null }], nextCursor: null };
+  };
+  return { ...fixtures, reads };
+}
+
+test('paginated attachment opens without loading complete history and pages old items on demand', { timeout: 5000 }, async () => {
+  const threadId = '00000000-0000-7000-8000-000000000005', fixtures = paginatedBridgeFixtures(threadId);
+  const bridge = await createNativeCliBridge({ threadId }, fixtures.factories);
+  try {
+    assert.equal(fixtures.desktop.completeLoads, 0);
+    assert.deepEqual(fixtures.reads, []);
+    assert.equal(bridge.evidence.history.mode, 'on-demand');
+    const socket = new WebSocket(bridge.endpoint, { headers: { Authorization: `Bearer ${bridge.token}` } });
+    await once(socket, 'open');
+    await rpc(socket, 'initialize', {});
+    const resumed = await rpc(socket, 'thread/resume', { threadId, excludeTurns: true });
+    assert.equal(resumed.result.thread.historyMode, 'paginated');
+    assert.deepEqual(resumed.result.thread.turns, []);
+    assert.equal(fixtures.desktop.completeLoads, 0);
+    const turns = await rpc(socket, 'thread/turns/list', { threadId, limit: 5, itemsView: 'notLoaded', sortDirection: 'desc' });
+    assert.equal(turns.result.data.length, 5);
+    assert.ok(turns.result.nextCursor);
+    const recent = await rpc(socket, 'thread/items/list', { threadId, limit: 5, sortDirection: 'desc' });
+    assert.equal(recent.result.data[0].item.text, 'prefix');
+    assert.deepEqual(fixtures.reads, []);
+    const older = await rpc(socket, 'thread/items/list', { threadId, cursor: recent.result.nextCursor, limit: 5, sortDirection: 'desc' });
+    assert.deepEqual(older.result.data.map(entry => entry.item.id), ['old-item']);
+    assert.equal(older.result.nextCursor, null);
+    assert.deepEqual(fixtures.reads.map(entry => entry.method), ['thread/turns/list', 'thread/items/list']);
+    assert.deepEqual(fixtures.writes, []);
+    socket.close(); await once(socket, 'close');
+  } finally { await bridge.close(); }
+});
+
+test('lazy history and live notifications preserve exactly one copy of the active prefix', { timeout: 5000 }, async () => {
+  const threadId = '00000000-0000-7000-8000-000000000006', fixtures = paginatedBridgeFixtures(threadId);
+  const bridge = await createNativeCliBridge({ threadId }, fixtures.factories);
+  try {
+    const socket = new WebSocket(bridge.endpoint, { headers: { Authorization: `Bearer ${bridge.token}` } }), events = [];
+    socket.on('message', bytes => { const message = JSON.parse(bytes); if (message.method) events.push(message); });
+    await once(socket, 'open'); await rpc(socket, 'initialize', {});
+    await rpc(socket, 'thread/resume', { threadId, excludeTurns: true });
+    const next = structuredClone(fixtures.desktop.state);
+    next.turnHistory.history.entitiesByKey['recent-4'].items[0].text += ' suffix';
+    fixtures.desktop.state = next;
+    fixtures.desktop.emit('state', next);
+    const page = await rpc(socket, 'thread/items/list', { threadId, limit: 1, sortDirection: 'desc' });
+    assert.equal(page.result.data[0].item.text, 'prefix');
+    assert.deepEqual(events.filter(event => event.method === 'item/agentMessage/delta').map(event => event.params.delta), [' suffix']);
+    const sent = await rpc(socket, 'turn/steer', { threadId, expectedTurnId: 'recent-4', input: [{ type: 'text', text: 'fixture steering' }] });
+    // Pagination never starts a second writer: input still goes to Desktop.
+    assert.equal(fixtures.writes.length, 1);
+    assert.equal(fixtures.writes[0].params.conversationId, threadId);
+    assert.equal(sent.result.turnId, 'recent-4');
+    socket.close(); await once(socket, 'close');
+  } finally { await bridge.close(); }
+});
+
+test('lazy page failures remain visible and cannot report a false history end', { timeout: 5000 }, async () => {
+  const threadId = '00000000-0000-7000-8000-000000000007', fixtures = paginatedBridgeFixtures(threadId);
+  const read = fixtures.metadata.call;
+  let rejectOlder = true;
+  fixtures.metadata.call = async (method, params) => {
+    if (method === 'thread/turns/list' && rejectOlder) throw new Error('fixture page unavailable');
+    return read(method, params);
+  };
+  const bridge = await createNativeCliBridge({ threadId }, fixtures.factories);
+  try {
+    const socket = new WebSocket(bridge.endpoint, { headers: { Authorization: `Bearer ${bridge.token}` } });
+    await once(socket, 'open'); await rpc(socket, 'initialize', {});
+    await rpc(socket, 'thread/resume', { threadId, excludeTurns: true });
+    const first = await rpc(socket, 'thread/items/list', { threadId, limit: 5, sortDirection: 'desc' });
+    const params = { threadId, limit: 5, sortDirection: 'desc', cursor: first.result.nextCursor };
+    const failed = await rpc(socket, 'thread/items/list', params);
+    assert.ok(failed.error); assert.equal(failed.result, undefined);
+    rejectOlder = false;
+    const retriedRead = await rpc(socket, 'thread/items/list', params);
+    assert.equal(retriedRead.result.data[0].item.id, 'old-item');
+    assert.equal(fixtures.desktop.completeLoads, 0);
+    assert.equal(fixtures.writes.length, 0);
+    socket.close(); await once(socket, 'close');
   } finally { await bridge.close(); }
 });

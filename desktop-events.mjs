@@ -77,20 +77,60 @@ const textSpec = item => item.type === 'agentMessage' ? ['text', 'item/agentMess
   : item.type === 'plan' ? ['text', 'item/plan/delta']
     : item.type === 'commandExecution' ? ['aggregatedOutput', 'item/commandExecution/outputDelta'] : null;
 
+function rememberedItem(turn, item, historical = false) {
+  const spec = textSpec(item);
+  // Keep text as a primitive: a reused item object must not overwrite the
+  // prefix already delivered to the CLI.
+  return { item, complete: completed(turn, item), historical, status: item.status, text: spec ? item[spec[0]] ?? '' : null };
+}
+
+function rememberActiveSource(previous, turn, items) {
+  const rawItems = turn.items ?? [];
+  previous.source = turn;
+  previous.sourceItems = rawItems;
+  previous.rawItems = rawItems.slice();
+  previous.hasUnmappedItems = rawItems.length !== items.length;
+  previous.firstItemId = items[0]?.id ?? previous.firstItemId ?? null;
+}
+
+function unchangedActiveTurn(previous, turn) {
+  const rawItems = turn.items ?? [];
+  if (previous.source !== turn || previous.sourceItems !== rawItems || previous.status !== turn.status ||
+      previous.hasUnmappedItems || previous.rawItems.length !== rawItems.length) return false;
+  // Desktop patches preserve unaffected references. Also recognize in-place
+  // text/completion changes in reused active items without rebuilding apiItems.
+  for (let i = 0; i < rawItems.length; i++) if (rawItems[i] !== previous.rawItems[i]) return false;
+  for (const old of previous.items.values()) {
+    if (old.complete || old.historical) continue;
+    const spec = textSpec(old.item);
+    if (old.item.status !== old.status || completed(turn, old.item) ||
+        spec && (old.item[spec[0]] ?? '') !== old.text) return false;
+  }
+  return true;
+}
+
 export class DesktopEventProjector {
   constructor(threadId, notify) { this.threadId = threadId; this.notify = notify; this.turns = new Map(); this.counts = {}; }
   emit(method, params) { this.counts[method] = (this.counts[method] ?? 0) + 1; this.notify(method, params); }
   seed(state) {
     this.turns.clear();
-    for (const turn of orderedDesktopTurns(state)) this.turns.set(turn.turnId, {
-      status: turn.status,
-      items: new Map(apiItems(turn).map(item => [item.id, { item, complete: completed(turn, item) }])),
-    });
+    const turns = orderedDesktopTurns(state), live = turns.at(-1);
+    for (const turn of turns) {
+      const previous = { status: turn.status, items: null };
+      // Older turns only anchor history ordering. Their items belong to paged
+      // history, never live notifications, even when later filled or replaced.
+      if (turn === live && turn.status === 'inProgress') {
+        const items = apiItems(turn);
+        previous.items = new Map(items.map(item => [item.id, rememberedItem(turn, item)]));
+        rememberActiveSource(previous, turn, items);
+      }
+      this.turns.set(turn.turnId, previous);
+    }
     this.lastName = state.title;
     this.lastStatus = JSON.stringify(state.threadRuntimeStatus);
     this.lastSettings = JSON.stringify(inheritedThreadSettings(state));
     this.lastUsage = JSON.stringify(state.latestTokenUsageInfo);
-    this.lastLiveTurnId = orderedDesktopTurns(state).at(-1)?.turnId ?? null;
+    this.lastLiveTurnId = live?.turnId ?? null;
     this.warnedRequests = new Set();
   }
   pendingRequests(state) {
@@ -113,8 +153,13 @@ export class DesktopEventProjector {
     for (let turnIndex = 0; turnIndex < currentTurns.length; turnIndex++) {
       const turn = currentTurns[turnIndex];
       let previous = this.turns.get(turn.turnId);
-      if (!previous && turnIndex < liveBoundary) {
-        this.turns.set(turn.turnId, { status: turn.status, items: new Map(apiItems(turn).map(item => [item.id, { item, complete: completed(turn, item) }])) });
+      if (turnIndex < liveBoundary || previous && previous.status !== 'inProgress') {
+        if (!previous || previous.status !== turn.status || previous.items !== null) {
+          this.turns.set(turn.turnId, { status: turn.status, items: null });
+        }
+        continue;
+      }
+      if (previous?.items && unchangedActiveTurn(previous, turn)) {
         continue;
       }
       if (!previous) {
@@ -122,14 +167,25 @@ export class DesktopEventProjector {
         this.turns.set(turn.turnId, previous);
         this.emit('turn/started', { threadId, turn: apiTurn(turn, { emptyItems: true, status: 'inProgress' }) });
       }
-      for (const item of apiItems(turn)) {
+      // A historical in-progress marker is not a new live turn. It can be
+      // retained in a disconnected island while the actual live tail changes.
+      if (!previous.items) continue;
+      const items = apiItems(turn);
+      let itemBoundary = previous.firstItemId ? items.findIndex(item => item.id === previous.firstItemId) : -1;
+      if (itemBoundary < 0 && previous.items.size) itemBoundary = items.findIndex(item => previous.items.has(item.id));
+      for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+        const item = items[itemIndex];
         const old = previous.items.get(item.id), spec = textSpec(item);
+        if (old?.historical || !old && itemIndex < itemBoundary) {
+          previous.items.set(item.id, rememberedItem(turn, item, true));
+          continue;
+        }
         if (!old) {
           const startedItem = spec ? { ...item, [spec[0]]: '' } : item;
           this.emit('item/started', { threadId, turnId: turn.turnId, item: startedItem, startedAtMs: lifecycleTime(turn, item, false, observedAt) });
         }
         if (spec && !old?.complete) {
-          const before = old?.item?.[spec[0]] ?? '', after = item[spec[0]] ?? '';
+          const before = old?.text ?? '', after = item[spec[0]] ?? '';
           if (typeof before === 'string' && typeof after === 'string' && after.startsWith(before) && after.length > before.length) {
             this.emit(spec[1], { threadId, turnId: turn.turnId, itemId: item.id, delta: after.slice(before.length) });
           } else if (old && typeof before === 'string' && typeof after === 'string' && !after.startsWith(before)) {
@@ -138,10 +194,12 @@ export class DesktopEventProjector {
         }
         const isComplete = completed(turn, item);
         if (isComplete && !old?.complete) this.emit('item/completed', { threadId, turnId: turn.turnId, item, completedAtMs: lifecycleTime(turn, item, true, observedAt) });
-        previous.items.set(item.id, { item, complete: isComplete });
+        previous.items.set(item.id, rememberedItem(turn, item));
       }
       if (turn.status !== 'inProgress' && previous.status === 'inProgress') this.emit('turn/completed', { threadId, turn: apiTurn(turn) });
       previous.status = turn.status;
+      if (turn.status === 'inProgress') rememberActiveSource(previous, turn, items);
+      else previous.items = null;
     }
     this.lastLiveTurnId = currentTurns.at(-1)?.turnId ?? this.lastLiveTurnId;
     this.pendingRequests(state);

@@ -64,6 +64,8 @@ export function nativeTerminalError(error, locale = systemLocale()) {
     SNAPSHOT_TIMEOUT: ['同步会话超时，请在桌面端打开该聊天后重试。', 'Chat synchronization timed out. Open this chat in Desktop and retry.'],
     HISTORY_TIMEOUT: ['完整历史加载超时。请保持桌面端这条聊天打开，稍后重新连接。', 'Loading the complete chat history timed out. Keep this chat open in Desktop and reconnect shortly.'],
     HISTORY_LOAD_IN_PROGRESS: ['会话历史仍在加载，请稍后重新打开终端。', 'Chat history is still loading. Reopen the terminal shortly.'],
+    HISTORY_NOT_READY: ['桌面端的最近消息尚未就绪，请打开该聊天后重新连接。', 'Recent messages are not ready. Open this chat in Desktop and reconnect.'],
+    LAZY_HISTORY_UNAVAILABLE: ['桌面端正在整理聊天记录，请等最近消息显示后重新连接。', 'Desktop is rebuilding this chat history. Reconnect after its recent messages appear.'],
     OWNER_UNAVAILABLE: ['找不到当前会话，请在桌面端打开该聊天后重试。', 'The current chat is unavailable. Open it in Desktop and retry.'],
     NO_OWNER: ['桌面端尚未加载这条会话，请先打开它再连接。', 'Desktop has not loaded this chat. Open it before connecting.'],
     FRAME_TOO_LARGE: ['会话数据超出了支持的通信大小，无法打开此终端。', 'The chat data exceeds the supported transport size. This terminal cannot open it.'],
@@ -212,8 +214,8 @@ export async function main(args = process.argv.slice(2)) {
     const options = parseNativeArguments(args);
     if (!options.check && !interactive) throw failure('TERMINAL_REQUIRED');
     if (interactive && !options.check) process.stderr.write(isChinese(locale)
-      ? '正在连接桌面会话并读取完整历史。长会话首次加载可能需要几分钟；Ctrl+C 可取消。\n'
-      : 'Connecting to the Desktop chat and loading its full history. Long chats may take a few minutes on first load; Ctrl+C cancels.\n');
+      ? '正在连接桌面会话。支持分页的聊天会先显示最近消息，向上翻阅时加载旧记录；Ctrl+C 可取消。\n'
+      : 'Connecting to the Desktop chat. Paginated chats show recent messages first and load older history as you scroll up; Ctrl+C cancels.\n');
     process.exitCode = await runNativeTerminal(options);
     if (options.check) process.stdout.write(isChinese(locale) ? 'Codex Session to Terminal 官方 CLI 连接检查通过。\n' : 'Codex Session to Terminal official CLI connection check passed.\n');
   } catch (error) {

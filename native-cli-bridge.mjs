@@ -7,6 +7,7 @@ import { verifiedDesktopTransport } from './cst-transport.mjs';
 import { DesktopEventProjector, inheritedThreadSettings } from './desktop-events.mjs';
 import { createDesktopController } from './desktop-control.mjs';
 import { SnapshotHistory } from './snapshot-history.mjs';
+import { LazyHistory } from './lazy-history.mjs';
 import { validateProtocol } from './protocol-validation.mjs';
 
 const error = (message, rpcCode = -32601, code = 'UNSUPPORTED_NATIVE_COMMAND') => Object.assign(new Error(message), { code, rpcError: { code: rpcCode, message } });
@@ -70,6 +71,8 @@ export async function createNativeCliBridge({ backendPath, powershellPath, threa
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   const token = randomBytes(32).toString('hex');
   let initialized, closed = false, disconnected = false, closing;
+  const attachedAt = performance.now();
+  const historyEvidence = { mode: null, readyMs: null };
   const notifyError = cause => { try { onError?.(cause); } catch {} };
   const callback = (fn, ...args) => { try { fn?.(...args); } catch { notifyError(new Error('The terminal presence callback failed.')); } };
   const checkOpen = () => { if (closed || signal?.aborted) throw Object.assign(new Error('Terminal attachment was cancelled.'), { code: 'ABORTED' }); };
@@ -101,26 +104,37 @@ export async function createNativeCliBridge({ backendPath, powershellPath, threa
   })();
   const abort = () => { void stop().catch(notifyError); };
   signal?.addEventListener('abort', abort, { once: true });
+  const readHistory = async () => {
+    const read = await metadata.call('thread/read', { threadId, includeTurns: false });
+    checkOpen();
+    if (read?.thread?.id !== threadId) throw Object.assign(new Error('Desktop metadata did not match the selected chat.'), { code: 'THREAD_MISMATCH' });
+    const paginated = read.thread.historyMode === 'paginated';
+    // Legacy threads still require the complete-snapshot path. Never claim an
+    // indexed history mode for a backend that would replay the entire rollout.
+    if (!paginated) {
+      await desktop.ensureCompleteHistory({ signal });
+      checkOpen();
+    }
+    const baseline = desktop.state;
+    const history = paginated
+      ? new LazyHistory(baseline, { threadId, call: (method, params) => metadata.call(method, params) })
+      : new SnapshotHistory(baseline);
+    historyEvidence.mode = paginated ? 'on-demand' : 'complete';
+    return { read, baseline, history };
+  };
   try {
     checkOpen();
     initialized = await metadata.initialize();
     checkOpen();
     await desktop.connect(threadId);
     checkOpen();
-    await desktop.ensureCompleteHistory({ signal });
-    checkOpen();
     // Fail before launching the native UI if its required live settings cannot
-    // be projected truthfully.
-    const initialRead = await metadata.call('thread/read', { threadId, includeTurns: false });
-    checkOpen();
-    if (initialRead?.thread?.id !== threadId) throw Object.assign(new Error('Desktop metadata did not match the selected chat.'), { code: 'THREAD_MISMATCH' });
-    const initialBaseline = desktop.state;
-    const initialHistory = new SnapshotHistory(initialBaseline);
+    // be projected truthfully. Do not fetch older pages during preflight.
+    const { read: initialRead, baseline: initialBaseline, history: initialHistory } = await readHistory();
     const initialResume = resumeFromLiveSnapshot(initialRead, initialBaseline);
     initialResume.thread.turns = initialHistory.turns;
     validateProtocol('v2/ThreadResumeResponse', initialResume);
-    validateProtocol('v2/ThreadTurnsListResponse', initialHistory.page('turns', { limit: 1000 }));
-    validateProtocol('v2/ThreadItemsListResponse', initialHistory.page('items', { limit: 1000 }));
+    historyEvidence.readyMs = Math.round(performance.now() - attachedAt);
     server.on('upgrade', (request, socket, head) => {
       const expected = Buffer.from(`Bearer ${token}`), received = Buffer.from(request.headers.authorization ?? '');
       if (closed || disconnected || request.headers.origin || request.url !== '/' || received.length !== expected.length || !timingSafeEqual(received, expected) || sockets.size) {
@@ -151,12 +165,9 @@ export async function createNativeCliBridge({ backendPath, powershellPath, threa
           if (method === 'thread/loaded/list') { reply({ data: [threadId], nextCursor: null }); return; }
           if (method.startsWith('thread/') && params.threadId !== threadId) throw error('This terminal is attached to a different chat.', -32602);
           if (method === 'thread/resume') {
-            await desktop.ensureCompleteHistory({ signal });
-            const read = await metadata.call('thread/read', { threadId, includeTurns: false });
-            checkOpen();
-            if (read?.thread?.id !== threadId) throw error('Desktop metadata did not match the selected chat.', -32000);
-            const baseline = desktop.state;
-            history = new SnapshotHistory(baseline);
+            const attached = await readHistory();
+            const { read, baseline } = attached;
+            history = attached.history;
             const response = resumeFromLiveSnapshot(read, baseline);
             response.thread.turns = params.excludeTurns ? [] : history.turns;
             validateProtocol('v2/ThreadResumeResponse', response);
@@ -175,7 +186,8 @@ export async function createNativeCliBridge({ backendPath, powershellPath, threa
             return;
           }
           if (history && (method === 'thread/turns/list' || method === 'thread/items/list')) {
-            const result = history.page(method === 'thread/turns/list' ? 'turns' : 'items', params);
+            const result = await history.page(method === 'thread/turns/list' ? 'turns' : 'items', params);
+            checkOpen();
             validateProtocol(method === 'thread/turns/list' ? 'v2/ThreadTurnsListResponse' : 'v2/ThreadItemsListResponse', result);
             reply(result); return;
           }
@@ -216,7 +228,7 @@ export async function createNativeCliBridge({ backendPath, powershellPath, threa
       get state() { return desktop.state; },
       get status() { return desktop.status; },
       get evidence() { return { methods: Object.fromEntries(methods), rejected: Object.fromEntries(rejected), metadataMethods: metadata.methods, desktopReady: desktop.status.ready, ownerUnchanged: !disconnected, threadId, readonly: !allowControl, controlCalls: controller.counts,
-        notifications: { ...notificationCounts } }; },
+        notifications: { ...notificationCounts }, history: { ...historyEvidence } }; },
     };
   } catch (cause) { await stop(); throw cause; }
 }
