@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LazyHistory } from '../lazy-history.mjs';
+import { LazyHistory, HISTORY_ITEM_PAGE_SIZE } from '../lazy-history.mjs';
 import { DesktopEventProjector } from '../desktop-events.mjs';
+import { applyDesktopPatches } from '../desktop-ipc.mjs';
 import { validateProtocol } from '../protocol-validation.mjs';
 
 const message = (id, text = id) => ({ type: 'agentMessage', id, text, phase: 'commentary' });
@@ -78,6 +79,59 @@ test('active text stays at the event baseline even if Desktop and disk grow', as
   assert.equal(notifications.find(e => e.method === 'item/agentMessage/delta').params.delta, ' suffix');
   page.data[0].item.text = 'caller modification';
   assert.equal((await history.page('items', itemParams())).data[0].item.text, 'prefix');
+});
+
+test('small item pages retain every record and their continuation without changing turn pages', async () => {
+  const snapshot = state(Array.from({ length: 53 }, (_, i) => turn(`t${i}`)));
+  const history = new LazyHistory(snapshot, { threadId: 'chat', call: async () => assert.fail('no disk read') });
+  assert.equal((await history.page('turns', { limit: 100 })).data.length, 53);
+  let cursor = null;
+  const ids = [], sizes = [];
+  do {
+    const page = await history.page('items', itemParams({ limit: 100, cursor }));
+    sizes.push(page.data.length);
+    ids.push(...page.data.map(e => e.item.id));
+    cursor = page.nextCursor;
+    validateProtocol('v2/ThreadItemsListResponse', page);
+  } while (cursor);
+  assert.equal(HISTORY_ITEM_PAGE_SIZE, 20);
+  assert.deepEqual(sizes, [20, 20, 13]);
+  assert.deepEqual(ids, Array.from({ length: 53 }, (_, i) => `i-t${52 - i}`));
+});
+
+test('attachment copies no recent item bodies and only the requested page is materialized', async () => {
+  let bodiesRead = 0;
+  const items = Array.from({ length: 1000 }, (_, i) => ({
+    type: 'agentMessage', id: `item-${i}`, phase: 'commentary',
+    get text() { bodiesRead++; return `body-${i}`; },
+  }));
+  const history = new LazyHistory(state([turn('live', items, { status: 'inProgress' })]), {
+    threadId: 'chat', call: async () => assert.fail('no disk read'),
+  });
+  assert.equal(bodiesRead, 0);
+  const first = await history.page('items', itemParams({ limit: 100 }));
+  assert.equal(bodiesRead, 20);
+  assert.equal(first.data[0].item.text, 'body-999');
+  const second = await history.page('items', itemParams({ limit: 100, cursor: first.nextCursor }));
+  assert.equal(bodiesRead, 40);
+  assert.equal(second.data[0].item.text, 'body-979');
+});
+
+test('immutable Desktop patches preserve uncopied baseline text and returned pages stay isolated', async () => {
+  const snapshot = state([turn('live', [message('active', 'prefix')], { status: 'inProgress' })]);
+  const history = new LazyHistory(snapshot, { threadId: 'chat', call: async () => assert.fail('no disk read') });
+  const events = [], projector = new DesktopEventProjector('chat', (method, params) => events.push({ method, params }));
+  projector.seed(snapshot);
+  const newer = applyDesktopPatches(snapshot, [{
+    op: 'replace', path: ['turnHistory', 'history', 'entitiesByKey', 'live', 'items', 0, 'text'], value: 'prefix suffix',
+  }]);
+  projector.update(newer);
+  const page = await history.page('items', itemParams({ limit: 100 }));
+  assert.equal(page.data[0].item.text, 'prefix');
+  assert.deepEqual(events.filter(e => e.method === 'item/agentMessage/delta').map(e => e.params.delta), [' suffix']);
+  page.data[0].item.text = 'caller mutation';
+  assert.equal((await history.page('items', itemParams({ limit: 100 }))).data[0].item.text, 'prefix');
+  assert.equal(newer.turnHistory.history.entitiesByKey.live.items[0].text, 'prefix suffix');
 });
 
 test('an active state turn with an orphan canonical entity retains its live prefix', async () => {
@@ -284,7 +338,7 @@ test('overlapping concurrent requests share one lazy fetch and stable cached dat
   assert.equal(calls, 1);
 });
 
-test('a full native item page spanning many short turns stays within its read budget', async () => {
+test('small native pages spanning many short turns stay bounded and reach the full history', async () => {
   let turnReads = 0, itemReads = 0;
   const history = new LazyHistory(state([turn('live')], {
     status: 'available', handle: { cursor: '0' },
@@ -301,13 +355,21 @@ test('a full native item page spanning many short turns stays within its read bu
     },
   });
   const page = await history.page('items', itemParams({ limit: 100 }));
-  assert.equal(page.data.length, 100);
+  assert.equal(page.data.length, 20);
   assert.ok(page.nextCursor);
-  assert.equal(itemReads, 99);
+  assert.equal(itemReads, 19);
+  assert.equal(turnReads, 4);
+  const ids = page.data.map(e => e.turnId);
+  let cursor = page.nextCursor;
+  while (cursor) {
+    const next = await history.page('items', itemParams({ cursor, limit: 100 }));
+    assert.ok(next.data.length <= 20);
+    ids.push(...next.data.map(e => e.turnId));
+    cursor = next.nextCursor;
+  }
+  assert.deepEqual(ids, ['live', ...Array.from({ length: 100 }, (_, i) => `old-${i}`)]);
+  assert.equal(itemReads, 100);
   assert.equal(turnReads, 20);
-  const last = await history.page('items', itemParams({ cursor: page.nextCursor, limit: 100 }));
-  assert.deepEqual(last.data.map(e => e.turnId), ['old-99']);
-  assert.equal(last.nextCursor, null);
 });
 
 test('timeline overlap stays in bounded batches until the frozen baseline ends', async () => {

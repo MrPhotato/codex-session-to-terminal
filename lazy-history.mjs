@@ -7,6 +7,9 @@ const invalid = message => Object.assign(new Error(message), {
 const unavailable = message => Object.assign(invalid(message), { code: 'LAZY_HISTORY_UNAVAILABLE' });
 const clone = value => structuredClone(value);
 const key = entry => `${entry.turnId}\0${entry.item.id}`;
+// The native CLI hydrates enough rendered rows for its viewport. Small pages
+// reduce overshoot without changing its settings or hiding the continuation.
+export const HISTORY_ITEM_PAGE_SIZE = 20;
 
 // Keep the live snapshot and streamed deltas on one immutable baseline. Older
 // items are read only when the native TUI asks for them, strictly before that
@@ -71,7 +74,10 @@ export class LazyHistory {
     if (pagination.reconnect || (pagination.summaryItemIds && Object.keys(pagination.summaryItemIds).length)) {
       throw unavailable('Desktop is rebuilding a sparse turn history. Let this chat finish loading in Desktop, then reconnect.');
     }
-    const items = clone(apiItems(turn));
+    // DesktopIpcClient applies patches immutably, so these item references
+    // retain the exact baseline. Deep-copy only the returned page below, not
+    // every large tool output in the recent turns during attachment.
+    const items = apiItems(turn);
     if (pagination.hasLoadedOldest === false && items.length === 0) throw unavailable('Desktop has not supplied the first visible item of a partial turn. Reconnect when its recent messages appear.');
     return {
       rows: items.reverse().map(item => ({
@@ -111,7 +117,8 @@ export class LazyHistory {
           !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) throw invalid('The terminal history cursor does not belong to this page.');
       offset = cursor.offset;
     }
-    return { kind, direction, filter, offset, limit: Math.max(1, Math.min(100, requestedLimit)) };
+    const pageLimit = kind === 'items' ? HISTORY_ITEM_PAGE_SIZE : 100;
+    return { kind, direction, filter, offset, limit: Math.max(1, Math.min(pageLimit, requestedLimit)) };
   }
 
   #cursor({ kind, direction, filter }, offset) {
