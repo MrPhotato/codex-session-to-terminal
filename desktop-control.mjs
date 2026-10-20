@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { win32 as windowsPath } from 'node:path';
 import { getActiveTurnId } from './cst-state.mjs';
-import { apiTurn, orderedDesktopTurns } from './desktop-events.mjs';
+import { apiTurn, orderedDesktopTurns, inheritedThreadSettings } from './desktop-events.mjs';
 
 const fault = (message, code = -32000) => Object.assign(new Error(message), { rpcError: { code, message } });
 const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
@@ -80,12 +80,16 @@ const comparableSetting = (key, value) => key === 'runtimeWorkspaceRoots' && Arr
   : key === 'cwd' && typeof value === 'string' ? windowsPath.normalize(value) : value;
 
 export function validateInheritedSettings(params, state, method = 'turn/start') {
-  const settings = state.latestThreadSettings ?? {}, permissions = state.currentPermissions ?? {};
+  const settings = inheritedThreadSettings(state), permissions = state.currentPermissions ?? {};
+  if (params.permissions != null && params.sandboxPolicy != null) {
+    throw fault('Choose a permission profile in Desktop; conflicting terminal permission overrides are not supported.', -32601);
+  }
   const expected = { model: settings.model, effort: settings.effort ?? state.latestReasoningEffort,
     summary: settings.summary, serviceTier: settings.serviceTier, cwd: settings.cwd ?? state.cwd,
-    approvalPolicy: permissions.approvalPolicy ?? settings.approvalPolicy,
-    approvalsReviewer: permissions.approvalsReviewer ?? settings.approvalsReviewer,
-    sandboxPolicy: permissions.sandboxPolicy ?? settings.sandboxPolicy,
+    approvalPolicy: settings.approvalPolicy,
+    approvalsReviewer: settings.approvalsReviewer,
+    sandboxPolicy: settings.sandboxPolicy,
+    permissions: settings.activePermissionProfile?.id,
     collaborationMode: settings.collaborationMode ?? state.latestCollaborationMode,
     runtimeWorkspaceRoots: permissions.runtimeWorkspaceRoots,
     disabledPluginIds: settings.disabledPluginIds,

@@ -2,6 +2,20 @@ const ITEM_TYPES = new Set(['userMessage', 'hookPrompt', 'agentMessage', 'functi
   'commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall', 'subAgentActivity',
   'webSearch', 'imageView', 'sleep', 'imageGeneration', 'enteredReviewMode', 'exitedReviewMode', 'contextCompaction']);
 
+// Desktop applies saved thread settings before the previous turn's permissions
+// when inheriting the next turn. currentPermissions can lag a settings update.
+// Use that same choice for resume, live notifications and echoed CLI settings.
+export function inheritedThreadSettings(state) {
+  const settings = state.latestThreadSettings ?? {}, permissions = state.currentPermissions ?? {};
+  return { ...settings,
+    approvalPolicy: settings.approvalPolicy ?? permissions.approvalPolicy,
+    approvalsReviewer: settings.approvalsReviewer ?? permissions.approvalsReviewer,
+    sandboxPolicy: settings.sandboxPolicy ?? permissions.sandboxPolicy,
+    activePermissionProfile: settings.activePermissionProfile !== undefined
+      ? settings.activePermissionProfile : permissions.activePermissionProfile,
+  };
+}
+
 export function orderedDesktopTurns(state) {
   const result = [], ids = new Set();
   const history = state.turnHistory?.kind === 'canonical' ? state.turnHistory.history : null;
@@ -74,7 +88,7 @@ export class DesktopEventProjector {
     });
     this.lastName = state.title;
     this.lastStatus = JSON.stringify(state.threadRuntimeStatus);
-    this.lastSettings = JSON.stringify(state.latestThreadSettings);
+    this.lastSettings = JSON.stringify(inheritedThreadSettings(state));
     this.lastUsage = JSON.stringify(state.latestTokenUsageInfo);
     this.lastLiveTurnId = orderedDesktopTurns(state).at(-1)?.turnId ?? null;
     this.warnedRequests = new Set();
@@ -134,8 +148,8 @@ export class DesktopEventProjector {
     if (state.title !== this.lastName) { this.lastName = state.title; this.emit('thread/name/updated', { threadId, threadName: state.title ?? null }); }
     const status = JSON.stringify(state.threadRuntimeStatus);
     if (status !== this.lastStatus) { this.lastStatus = status; this.emit('thread/status/changed', { threadId, status: state.threadRuntimeStatus }); }
-    const settings = JSON.stringify(state.latestThreadSettings);
-    if (settings !== this.lastSettings) { this.lastSettings = settings; this.emit('thread/settings/updated', { threadId, threadSettings: state.latestThreadSettings }); }
+    const threadSettings = inheritedThreadSettings(state), settings = JSON.stringify(threadSettings);
+    if (settings !== this.lastSettings) { this.lastSettings = settings; this.emit('thread/settings/updated', { threadId, threadSettings }); }
     const usage = JSON.stringify(state.latestTokenUsageInfo), last = currentTurns.at(-1);
     if (last?.turnId && usage !== this.lastUsage && state.latestTokenUsageInfo) {
       this.lastUsage = usage; this.emit('thread/tokenUsage/updated', { threadId, turnId: last.turnId, tokenUsage: state.latestTokenUsageInfo });

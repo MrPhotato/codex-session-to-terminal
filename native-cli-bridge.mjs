@@ -4,7 +4,7 @@ import { WebSocketServer } from 'ws';
 import { createMetadataReader, METADATA_METHODS } from './readonly-metadata.mjs';
 import { DesktopIpcClient } from './desktop-ipc.mjs';
 import { verifiedDesktopTransport } from './cst-transport.mjs';
-import { DesktopEventProjector } from './desktop-events.mjs';
+import { DesktopEventProjector, inheritedThreadSettings } from './desktop-events.mjs';
 import { createDesktopController } from './desktop-control.mjs';
 import { SnapshotHistory } from './snapshot-history.mjs';
 import { validateProtocol } from './protocol-validation.mjs';
@@ -20,7 +20,8 @@ function required(value, key) {
 // Project only authoritative, live Desktop execution settings. No defaults that
 // could imply permissions the Desktop does not actually use.
 export function resumeFromLiveSnapshot(metadata, state) {
-  const settings = required(state.latestThreadSettings, 'thread settings');
+  required(state.latestThreadSettings, 'thread settings');
+  const settings = inheritedThreadSettings(state);
   const permissions = required(state.currentPermissions, 'current permissions');
   const thread = { ...metadata.thread, name: state.title ?? metadata.thread.name,
     sessionId: required(state.sessionId, 'session ID'),
@@ -34,10 +35,10 @@ export function resumeFromLiveSnapshot(metadata, state) {
     model: thread.model,
     modelProvider: thread.modelProvider,
     cwd: thread.cwd,
-    approvalPolicy: required(permissions.approvalPolicy ?? settings.approvalPolicy, 'approval policy'),
-    approvalsReviewer: required(permissions.approvalsReviewer ?? settings.approvalsReviewer, 'approval reviewer'),
-    sandbox: required(permissions.sandboxPolicy ?? settings.sandboxPolicy, 'sandbox policy'),
-    activePermissionProfile: permissions.activePermissionProfile ?? settings.activePermissionProfile ?? null,
+    approvalPolicy: required(settings.approvalPolicy, 'approval policy'),
+    approvalsReviewer: required(settings.approvalsReviewer, 'approval reviewer'),
+    sandbox: required(settings.sandboxPolicy, 'sandbox policy'),
+    activePermissionProfile: settings.activePermissionProfile ?? null,
     runtimeWorkspaceRoots: permissions.runtimeWorkspaceRoots ?? null,
     disabledPluginIds: settings.disabledPluginIds ?? null,
     serviceTier: settings.serviceTier ?? null,
