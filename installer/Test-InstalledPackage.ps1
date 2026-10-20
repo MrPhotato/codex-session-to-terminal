@@ -25,12 +25,19 @@ $links = @(
 foreach ($link in $links) {
     if (!(Test-Path -LiteralPath $link)) { throw "Shortcut missing: $link" }
     $shortcut = $shell.CreateShortcut($link)
-    if ($shortcut.TargetPath -ine (Join-Path $app 'Start-CST.cmd')) { throw 'Shortcut does not target the independent entry point.' }
+    if ($shortcut.TargetPath -ine (Join-Path $app 'Start-CST.cmd')) { throw 'Shortcut does not target the current tray entry point.' }
 }
-foreach ($entry in @(@('Codex Session to Terminal - Independent','Start-CST.cmd'),@('Codex Session to Terminal - Legacy Shared Startup','Start.cmd'))) {
-    $link = Join-Path ([Environment]::GetFolderPath('Programs')) ('Codex Session to Terminal\' + $entry[0] + '.lnk')
-    $links += $link
-    if (!(Test-Path -LiteralPath $link) -or $shell.CreateShortcut($link).TargetPath -ine (Join-Path $app $entry[1])) { throw 'Independent or rollback entry is missing.' }
+$shortcutRoots = @(
+    (Join-Path ([Environment]::GetFolderPath('Programs')) 'Codex Session to Terminal')
+    ([Environment]::GetFolderPath('Desktop'))
+)
+$retiredLinks = @(foreach ($root in $shortcutRoots) {
+    foreach ($name in @('Codex Session to Terminal - Independent','Codex Session to Terminal - Legacy Shared Startup')) {
+        Join-Path $root ($name + '.lnk')
+    }
+})
+foreach ($link in $retiredLinks) {
+    if (Test-Path -LiteralPath $link) { throw "Fresh installation exposed a retired entry: $link" }
 }
 # The read-only check reports missing dependencies without installing anything.
 & (Join-Path $app 'runtime\powershell\pwsh.exe') -NoProfile -File (Join-Path $app 'Start-CST.ps1') -Check
@@ -75,6 +82,56 @@ if ($LASTEXITCODE -ne 0) { throw 'Independent bootstrap check failed after depen
 $cli = Join-Path $app 'node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
 if ((& $cli --version) -cne ('codex-cli ' + $expectedCli) -or $LASTEXITCODE -ne 0) { throw 'Downloaded CLI version mismatch.' }
 
+# Upgrade a recognized old installation even when no desktop task is selected.
+# Only shortcuts are fixtures: no application target is started by these checks.
+function Write-TestShortcut([string]$Path, [string]$Target, [string]$Arguments = '') {
+    $shortcut = $shell.CreateShortcut($Path)
+    $shortcut.TargetPath = $Target
+    $shortcut.Arguments = $Arguments
+    $shortcut.WorkingDirectory = Split-Path -Parent $Target
+    $shortcut.Save()
+}
+foreach ($link in $links) { Write-TestShortcut $link (Join-Path $app 'Enable-Normal-Desktop.cmd') }
+foreach ($link in $retiredLinks) { Write-TestShortcut $link (Join-Path $app 'Start.cmd') }
+if ((Invoke-InstallerProcess $InstallerPath 'migrate-shortcuts.log' @('/TASKS=""')) -ne 0) { throw 'Recognized shortcut migration failed.' }
+foreach ($link in $links) {
+    if ($shell.CreateShortcut($link).TargetPath -ine (Join-Path $app 'Start-CST.cmd')) { throw 'Upgrade left the standard shortcut on the legacy entry.' }
+}
+foreach ($link in $retiredLinks) {
+    if (Test-Path -LiteralPath $link) { throw 'Upgrade kept a retired recognized shortcut.' }
+}
+$shortcutBackups = @(Get-ChildItem -LiteralPath (Join-Path $privateRoot 'shortcut-backups') -Filter '*.lnk' -Recurse -File)
+if ($shortcutBackups.Count -lt 6) { throw 'Upgrade did not preserve all six replaced or removed shortcuts.' }
+
+# A prior desktop alias must become the standard icon even when that icon did
+# not exist and the optional task for new desktop icons is not selected.
+$desktopAlias = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Codex Session to Terminal - Independent.lnk'
+Remove-Item -LiteralPath $links[1]
+Write-TestShortcut $desktopAlias (Join-Path $app 'Start-CST.cmd')
+if ((Invoke-InstallerProcess $InstallerPath 'migrate-only-desktop-alias.log' @('/TASKS=""')) -ne 0) { throw 'Desktop alias-only migration failed.' }
+if (!(Test-Path -LiteralPath $links[1]) -or $shell.CreateShortcut($links[1]).TargetPath -ine (Join-Path $app 'Start-CST.cmd') -or
+    (Test-Path -LiteralPath $desktopAlias)) { throw 'Upgrade removed the sole desktop alias without a standard replacement.' }
+
+# Same names with unknown targets or customized arguments must be left intact.
+$unknownStandard = $links[1]
+$unknownAlias = $retiredLinks[0]
+$customAlias = $retiredLinks[1]
+Write-TestShortcut $unknownStandard (Join-Path $env:WINDIR 'notepad.exe')
+Write-TestShortcut $unknownAlias (Join-Path $env:WINDIR 'notepad.exe')
+Write-TestShortcut $customAlias (Join-Path $app 'Start.cmd') '--custom-launch'
+Write-TestShortcut $desktopAlias (Join-Path $app 'Start-CST.cmd')
+$protected = @($unknownStandard,$unknownAlias,$customAlias)
+$beforeHashes = @{}
+foreach ($link in $protected) { $beforeHashes[$link] = (Get-FileHash -LiteralPath $link).Hash }
+if ((Invoke-InstallerProcess $InstallerPath 'preserve-custom-shortcuts.log' @('/TASKS="desktopicon"')) -ne 0) { throw 'Upgrade with custom shortcut names failed.' }
+foreach ($link in $protected) {
+    if ((Get-FileHash -LiteralPath $link).Hash -cne $beforeHashes[$link]) { throw "Upgrade changed a custom shortcut: $link" }
+}
+if (Test-Path -LiteralPath $desktopAlias) { throw 'Upgrade retained the recognized desktop alias beside a protected custom standard name.' }
+# Restore only these disposable fixtures before testing normal uninstall.
+Write-TestShortcut $unknownStandard (Join-Path $app 'Start-CST.cmd')
+Remove-Item -LiteralPath $unknownAlias,$customAlias
+
 # Upgrade/uninstall must decline locked program files rather than close a process.
 $uninstaller = Join-Path $app 'unins000.exe'
 $lock = [IO.File]::Open($node, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
@@ -84,7 +141,7 @@ try {
     if (!(Test-Path -LiteralPath $node)) { throw 'Locked runtime was removed.' }
 } finally { $lock.Dispose() }
 
-[void](New-Item -ItemType Directory -Path $privateRoot)
+[void](New-Item -ItemType Directory -Path $privateRoot -Force)
 $retainedFile = Join-Path $privateRoot 'smoke-retain.txt'
 'private-state-placeholder' | Set-Content -LiteralPath $retainedFile
 if ((Invoke-InstallerProcess $uninstaller 'uninstall.log') -ne 0) { throw 'Normal uninstall failed.' }
@@ -92,4 +149,4 @@ foreach ($managed in @((Join-Path $app 'Start.cmd'),(Join-Path $app 'runtime'),(
     if (Test-Path -LiteralPath $managed) { throw "Uninstall left a managed item: $managed" }
 }
 if ((Get-Content -LiteralPath $retainedFile -Raw).Trim() -cne 'private-state-placeholder') { throw 'Uninstall modified private user state.' }
-'Installer smoke passed: runtime and shortcuts installed, missing Desktop refused, locked dependencies downloaded once, locked files blocked, uninstall removed managed files and retained private state.'
+'Installer smoke passed: standard entries installed, legacy shortcuts migrated and backed up, custom targets preserved, missing Desktop refused, dependencies downloaded once, locked files blocked, uninstall removed managed files and retained private state.'

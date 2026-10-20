@@ -12,7 +12,7 @@ try {
     if ($PreviewDirectory) { [void][IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($PreviewDirectory)) }
     foreach ($chinese in @($true, $false)) {
         $text = Get-CstInterfaceText -Chinese $chinese
-        foreach ($key in @('Running','Sessions','Waiting','Ready','Hint','Legacy','Exit','OpenFailed','StartFailed')) {
+        foreach ($key in @('Running','Sessions','Waiting','Ready','Hint','Exit','OpenFailed','StartFailed')) {
             if ([string]::IsNullOrWhiteSpace($text[$key])) { throw "Interface translation is missing: $key" }
         }
         foreach ($dark in @($true, $false)) {

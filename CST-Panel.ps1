@@ -21,7 +21,7 @@ function Get-CstInterfaceText {
         return @{
             Running = 'Codex Session to Terminal 正在托盘运行。点击图标查看终端会话。'
             Sessions = '终端会话'; Waiting = '等待 ChatGPT'; Ready = '已就绪 · ChatGPT 正在运行'
-            Hint = '在 ChatGPT 中按 Ctrl+Alt+L'; Legacy = '查看原版启动入口'; Exit = '退出 Codex Session to Terminal'
+            Hint = '在 ChatGPT 中按 Ctrl+Alt+L'; Exit = '退出 Codex Session to Terminal'
             TooltipReady = 'Codex Session to Terminal · Ctrl+Alt+L 打开当前聊天'; TooltipWaiting = 'Codex Session to Terminal · 等待 ChatGPT'
             OpenFailed = '终端未能打开。ChatGPT 仍在正常运行。'
             StartFailed = 'Codex Session to Terminal 无法启动，请检查程序文件和运行环境是否完整。'
@@ -30,7 +30,7 @@ function Get-CstInterfaceText {
     return @{
         Running = 'Codex Session to Terminal is running in the system tray. Click its icon to view terminal sessions.'
         Sessions = 'Terminal sessions'; Waiting = 'Waiting for ChatGPT'; Ready = 'Ready · ChatGPT is running'
-        Hint = 'In ChatGPT, press Ctrl+Alt+L'; Legacy = 'Show legacy startup files'; Exit = 'Exit Codex Session to Terminal'
+        Hint = 'In ChatGPT, press Ctrl+Alt+L'; Exit = 'Exit Codex Session to Terminal'
         TooltipReady = 'Codex Session to Terminal · Ctrl+Alt+L opens this chat'; TooltipWaiting = 'Codex Session to Terminal · waiting for ChatGPT'
         OpenFailed = 'The terminal could not be opened. ChatGPT is still running normally.'
         StartFailed = 'Codex Session to Terminal could not start. Check that its files and runtimes are installed correctly.'

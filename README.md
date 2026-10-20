@@ -8,15 +8,15 @@
 
 源码：[MrPhotato/codex-session-to-terminal](https://github.com/MrPhotato/codex-session-to-terminal)。公开安装包：[GitHub Releases](https://github.com/MrPhotato/codex-session-to-terminal/releases)。发布页仍标为 0.1 的安装包使用旧方案；请以版本和发布说明为准。
 
-## 使用独立模式
+## 使用方法
 
 1. 像平常一样打开 ChatGPT。
-2. 双击 `Start-CST.cmd`，或开始菜单的 **Codex Session to Terminal - Independent**。Codex Session to Terminal 打开会话面板、驻留系统托盘，并发出一次启动通知；再次打开会显示已有实例的面板。
+2. 双击 `Start-CST.cmd`，或桌面、开始菜单的 **Codex Session to Terminal**。应用打开会话面板、驻留系统托盘，并发出一次启动通知；再次打开会显示已有实例的面板。
 3. 在已有键盘焦点的本地 Work / Codex 聊天按 **Ctrl+Alt+L**，用官方 Codex CLI 打开同一条聊天。输入前点击终端。
 4. 单击托盘图标查看终端会话面板。关闭面板会收回托盘。
 5. 右键托盘图标选择 **退出 / Exit**，断开本轮所有终端；ChatGPT 和已接受的任务继续运行。
 
-会话面板仅显示本轮打开的终端会话，展示实际连接状态和是否有任务运行。同一聊天打开多个终端时合并显示数量。关闭终端后自动移除，失去心跳的连接不会继续显示为已连接。面板和托盘菜单的深浅色跟随 Windows 应用主题，中英文跟随 Windows 显示语言（其他语言使用英文），没有额外切换按钮。托盘菜单显示完整产品名称、ChatGPT 是否已打开及快捷键提示，并提供查看会话、查看原版入口和退出三个操作。启动通知遵循 Windows 的通知和勿扰设置。
+会话面板仅显示本轮打开的终端会话，展示实际连接状态和是否有任务运行。同一聊天打开多个终端时合并显示数量。关闭终端后自动移除，失去心跳的连接不会继续显示为已连接。面板和托盘菜单的深浅色跟随 Windows 应用主题，中英文跟随 Windows 显示语言（其他语言使用英文），没有额外切换按钮。托盘菜单显示完整产品名称、ChatGPT 是否已打开及快捷键提示，提供查看会话和退出两个操作。启动通知遵循 Windows 的通知和勿扰设置。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/session-panel-dark.png">
@@ -39,22 +39,14 @@ Codex Session to Terminal 使用 ChatGPT 自带的“复制聊天链接”快捷
 
 终端连接和权限设置通知使用 Desktop 已保存的下一轮设置，避免与上一轮权限缓存不一致。发送时仍由 Desktop 继承这些设置；连接层不会把终端的权限覆盖参数传给 Desktop。
 
-## 随时回退原版
+## 从旧版升级
 
-原有 `Start.cmd`、`Enable-Normal-Desktop.cmd`、共享连接配置及官方 CLI 方案均保留。独立模式和旧方案使用不同的运行目录。
-
-1. 右键托盘退出 Codex Session to Terminal。
-2. 等当前任务结束，再由你正常退出 ChatGPT。
-3. 打开 **Codex Session to Terminal - Legacy Shared Startup** 或原有 `Start.cmd` / `Enable-Normal-Desktop.cmd`。
-
-旧方案需要由 Codex Session to Terminal 启动共享后台，因此要求先退出普通启动的 ChatGPT；它不会强行关闭应用。完整说明见 [LEGACY.md](LEGACY.md)。托盘的 **查看原版启动入口 / Show legacy startup files** 可以找到回退入口，不会替你重启 ChatGPT。
-
-从旧版升级时，已有同名快捷方式保持原目标；开始菜单另提供明确的 **Independent** 与 **Legacy Shared Startup** 两个入口。
+当前版本统一使用独立连接方案，标准入口为 **Codex Session to Terminal**。不再提供单独的 Independent 或 Legacy Shared Startup 入口，也无需先退出 ChatGPT。安装器仅迁移能够识别为本产品的旧快捷方式，保留指向其他目标的自定义快捷方式。
 
 ## 安装与运行要求
 
 - Windows x64，正常安装并登录 `OpenAI.Codex` 桌面包。
-- 独立模式需要 Node.js 22+ 和 PowerShell 7.4+；安装包附带运行时。源码部署先运行 `npm ci`，再运行 `Start-CST.cmd`。
+- 需要 Node.js 22+ 和 PowerShell 7.4+；安装包附带运行时。源码部署先运行 `npm ci`，再运行 `Start-CST.cmd`。
 - 推荐 Windows Terminal，没有时使用 PowerShell 控制台。
 - `Start-CST.ps1 -Check` 仅检查文件、运行时、依赖和执行策略，不下载依赖、不打开托盘或 ChatGPT。
 - 不设置系统执行策略，不绕过管理员/用户明确配置的 Restricted 或 AllSigned。
@@ -71,7 +63,7 @@ Codex Session to Terminal 在现有 `codex-ipc` 管道注册自己的客户端�
 
 独立模式状态位于 `%LOCALAPPDATA%\SessionBridge\independent\runs`，每轮使用独立目录，保存托盘进程身份、心跳和退出信号。面板读取该轮 `sessions` 目录中的会话 ID、标题、终端进程、连接阶段和更新时间；终端正常退出时删除自身记录。不会额外保存账号、凭证或聊天正文。退出托盘或心跳失效会断开终端；已经被会话接受的任务不会因此取消。
 
-内部协议未来可能变化。协议不匹配时停止该连接并显示错误，旧方案仍可选择。仅检查文件版本不会触发限制。
+内部协议未来可能变化。协议不匹配时停止该连接并显示错误。仅检查文件版本不会触发限制。
 
 ## 开发与验证
 

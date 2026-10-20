@@ -12,7 +12,6 @@ namespace CodexSessionToTerminal
     {
         public const string Brand = "Codex Session to Terminal";
         public readonly ToolStripMenuItem SessionsItem;
-        public readonly ToolStripMenuItem LegacyItem;
         public readonly ToolStripMenuItem ExitItem;
         private readonly ToolStripLabel heading;
         private readonly ToolStripLabel status;
@@ -43,10 +42,9 @@ namespace CodexSessionToTerminal
             status = Info("status");
             hint = Info("hint");
             SessionsItem = ActionItem("sessions");
-            LegacyItem = ActionItem("legacy");
             ExitItem = ActionItem("exit");
             separator = new ToolStripSeparator { AutoSize = false, Margin = Padding.Empty };
-            Items.AddRange(new ToolStripItem[] { heading, status, SessionsItem, LegacyItem, separator, ExitItem, hint });
+            Items.AddRange(new ToolStripItem[] { heading, status, SessionsItem, separator, ExitItem, hint });
             UpdateAppearance(false, false, false);
         }
 
@@ -82,7 +80,6 @@ namespace CodexSessionToTerminal
             status.Text = chinese ? (desktopReady ? "已就绪 · ChatGPT 正在运行" : "等待 ChatGPT 启动")
                 : (desktopReady ? "Ready · ChatGPT is running" : "Waiting for ChatGPT");
             SessionsItem.Text = chinese ? "查看终端会话" : "View terminal sessions";
-            LegacyItem.Text = chinese ? "查看原版启动入口" : "Show legacy startup files";
             ExitItem.Text = chinese ? "退出" : "Exit";
             hint.Text = chinese ? "在 ChatGPT 中按 Ctrl+Alt+L" : "In ChatGPT, press Ctrl+Alt+L";
             AccessibleDescription = status.Text;
@@ -93,7 +90,7 @@ namespace CodexSessionToTerminal
             if (metricsChanged) ApplyMetrics(nextScale);
             else
             {
-                foreach (ToolStripMenuItem item in new[] { SessionsItem, LegacyItem, ExitItem }) item.ForeColor = Foreground;
+                foreach (ToolStripMenuItem item in new[] { SessionsItem, ExitItem }) item.ForeColor = Foreground;
                 foreach (ToolStripLabel item in new[] { heading, status, hint }) item.ForeColor = item == heading ? Foreground : Muted;
             }
             appearanceInitialized = true;
@@ -123,7 +120,7 @@ namespace CodexSessionToTerminal
             status.Font = smallFont;
             hint.Font = smallFont;
             hint.Size = new Size(itemWidth, Px(30));
-            foreach (ToolStripMenuItem item in new[] { SessionsItem, LegacyItem, ExitItem })
+            foreach (ToolStripMenuItem item in new[] { SessionsItem, ExitItem })
             {
                 item.Size = new Size(itemWidth, Px(32));
                 item.Font = bodyFont;
@@ -136,7 +133,7 @@ namespace CodexSessionToTerminal
                 item.ForeColor = item == heading ? Foreground : Muted;
             }
             separator.Size = new Size(itemWidth, Px(7));
-            Size = new Size(width, Padding.Vertical + heading.Height + status.Height + 3 * SessionsItem.Height + separator.Height + hint.Height);
+            Size = new Size(width, Padding.Vertical + heading.Height + status.Height + 2 * SessionsItem.Height + separator.Height + hint.Height);
             ResumeLayout(true);
             if (previousBody != null) previousBody.Dispose();
             if (previousHeading != null) previousHeading.Dispose();

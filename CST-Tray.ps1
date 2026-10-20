@@ -102,6 +102,79 @@ function Show-CstRequestedPanel {
     if ($Initial -or $Instance.Activation.WaitOne(0)) { $Panel.ShowPanel() }
 }
 
+# Keep package discovery, process inspection and presence-file reads away from
+# the window's message thread. Only completed snapshots are consumed by the UI.
+function New-CstStatusReader {
+    param([string]$Script = @'
+param($Root, $ControlDirectory, $PreferredPid)
+. (Join-Path $Root 'CST-Tray.ps1') -DefinitionsOnly
+. (Join-Path $Root 'CST-Presence.ps1')
+$desktop = $null
+try { $desktop = Get-CstRunningDesktop -PreferredPid $PreferredPid } catch { }
+[pscustomobject]@{
+    Desktop = $desktop
+    Rows = @(Get-CstSessionRows -ControlDirectory $ControlDirectory)
+    Chinese = [CodexSessionToTerminal.SystemAppearance]::UiLanguage().StartsWith('zh', [StringComparison]::OrdinalIgnoreCase)
+    Dark = [CodexSessionToTerminal.SystemAppearance]::IsDark()
+}
+'@)
+    $runspace = [RunspaceFactory]::CreateRunspace()
+    $runspace.ApartmentState = [Threading.ApartmentState]::MTA
+    $runspace.ThreadOptions = [Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+    $runspace.Open()
+    return [pscustomobject]@{ Worker = $null; Runspace = $runspace; Script = $Script; Pending = $null; Closed = $false }
+}
+
+function Start-CstStatusRead {
+    param([Parameter(Mandatory)]$Reader, [Parameter(Mandatory)][string]$ControlDirectory, [int]$PreferredPid = 0)
+    if ($Reader.Closed -or $Reader.Pending) { return $false }
+    # Reuse the background runspace, but give each scan its own invocation and
+    # output buffer so an earlier failed invocation cannot poison later scans.
+    $Reader.Worker = [PowerShell]::Create()
+    try {
+        $Reader.Worker.Runspace = $Reader.Runspace
+        [void]$Reader.Worker.AddScript($Reader.Script).AddArgument($PSScriptRoot).AddArgument($ControlDirectory).AddArgument($PreferredPid)
+        $Reader.Pending = $Reader.Worker.BeginInvoke()
+        return $true
+    } catch {
+        $Reader.Worker.Dispose()
+        $Reader.Worker = $null
+        throw
+    }
+}
+
+function Receive-CstStatusRead {
+    param([Parameter(Mandatory)]$Reader)
+    if ($Reader.Closed -or !$Reader.Pending -or !$Reader.Pending.IsCompleted) { return }
+    try {
+        $result = @($Reader.Worker.EndInvoke($Reader.Pending))
+        # Expected missing processes/files may be explicitly handled by the
+        # scanner and still set HadErrors. Reject only emitted scan errors.
+        if ($Reader.Worker.Streams.Error.Count -eq 0 -and $result.Count) { return $result[-1] }
+    } catch { }
+    finally {
+        $Reader.Pending = $null
+        $Reader.Worker.Dispose()
+        $Reader.Worker = $null
+    }
+}
+
+function Close-CstStatusReader {
+    param([Parameter(Mandatory)]$Reader)
+    if ($Reader.Closed) { return }
+    $Reader.Closed = $true
+    try {
+        if ($Reader.Pending) {
+            $Reader.Worker.Stop()
+            try { [void]$Reader.Worker.EndInvoke($Reader.Pending) } catch { }
+        }
+    } finally {
+        $Reader.Pending = $null
+        if ($Reader.Worker) { $Reader.Worker.Dispose(); $Reader.Worker = $null }
+        $Reader.Runspace.Dispose()
+    }
+}
+
 function Get-CstTerminalArguments {
     param([Parameter(Mandatory)][guid]$ThreadId, [Parameter(Mandatory)][string]$ControlDirectory, [Parameter(Mandatory)][string]$PowerShellPath, [Parameter(Mandatory)][string]$BackendPath)
     @((Join-Path $PSScriptRoot 'cst-native-terminal.mjs'), '--thread', $ThreadId.ToString('D'), '--control-directory', [IO.Path]::GetFullPath($ControlDirectory), '--powershell-path', $PowerShellPath, '--backend-path', $BackendPath)
@@ -142,8 +215,9 @@ function Invoke-CstTerminal {
 function Start-CstTray {
     param([Parameter(Mandatory)][string]$NodeExecutable)
     if (!$IsWindows -or [Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { throw 'Start Codex Session to Terminal with PowerShell 7 -STA on Windows.' }
-    $instance = $null; $listener = $null; $tray = $null; $icon = $null; $menu = $null; $panel = $null; $heartbeat = $null; $runDirectory = $null
-    $state = @{ Exit = $false; Desktop = $null; LastThread = ''; LastLaunch = [DateTime]::MinValue; Text = $null }
+    $instance = $null; $tray = $null; $icon = $null; $menu = $null; $panel = $null; $heartbeat = $null; $runDirectory = $null
+    $reader = $null; $timer = $null; $context = $null
+    $state = @{ Exit = $false; Desktop = $null; Listener = $null; LastThread = ''; LastLaunch = [DateTime]::MinValue; Text = $null; TickRunning = $false; Failure = $null; NextCheck = [DateTime]::MinValue }
     try {
         $instance = New-CstTrayInstance
         if (!$instance.OwnsMutex) { return }
@@ -172,10 +246,6 @@ function Start-CstTray {
         $menu = [CodexSessionToTerminal.TrayMenu]::new()
         $menu.UpdateAppearance([CodexSessionToTerminal.SystemAppearance]::IsDark(), $chinese, $false)
         $menu.SessionsItem.add_Click({ $panel.ShowPanel() })
-        $menu.LegacyItem.add_Click({
-            # Reveal the fallback; never invoke it or restart Desktop from the tray.
-            Start-Process -FilePath explorer.exe -ArgumentList @('/select,', ('"' + (Join-Path $PSScriptRoot 'Start.cmd') + '"')) -WindowStyle Normal | Out-Null
-        })
         $menu.ExitItem.add_Click({ $state.Exit = $true })
         $tray = [Windows.Forms.NotifyIcon]::new()
         $icon = [Drawing.Icon]::new((Join-Path $PSScriptRoot 'assets\icon.ico'))
@@ -203,34 +273,54 @@ function Start-CstTray {
             }
             catch { $tray.ShowBalloonTip(4000, 'Codex Session to Terminal', $state.Text.OpenFailed, [Windows.Forms.ToolTipIcon]::Warning) }
         }
-        $nextCheck = [DateTime]::MinValue
-        while (!$state.Exit -and !(Test-Path -LiteralPath (Join-Path $runDirectory 'stop.flag'))) {
+        $reader = New-CstStatusReader
+        $context = [Windows.Forms.ApplicationContext]::new()
+        $timer = [Windows.Forms.Timer]::new()
+        $timer.Interval = 50
+        $timer.add_Tick({
+          if ($state.TickRunning) { return }
+          $state.TickRunning = $true
+          try {
+            if ($state.Exit -or (Test-Path -LiteralPath (Join-Path $runDirectory 'stop.flag'))) {
+                $timer.Stop(); $context.ExitThread(); return
+            }
             Show-CstRequestedPanel -Instance $instance -Panel $panel
-            if ([DateTime]::UtcNow -ge $nextCheck) {
-                $desktop = $null
-                try { $desktop = Get-CstRunningDesktop -PreferredPid $(if ($state.Desktop) { $state.Desktop.Id } else { 0 }) } catch { }
+            $snapshot = Receive-CstStatusRead -Reader $reader
+            if ($snapshot) {
+                $desktop = $snapshot.Desktop
                 $identity = if ($desktop) { "$($desktop.Id):$($desktop.StartTicks)" } else { '' }
                 $previous = if ($state.Desktop) { "$($state.Desktop.Id):$($state.Desktop.StartTicks)" } else { '' }
                 if ($identity -ne $previous) {
-                    if ($listener) { $listener.remove_TextChanged($onTextChanged); $listener.Dispose(); $listener = $null }
+                    if ($state.Listener) { $state.Listener.remove_TextChanged($onTextChanged); $state.Listener.Dispose(); $state.Listener = $null }
                     $state.Desktop = $desktop
-                    if ($desktop) { $listener = [CodexSharedSession.ClipboardLinkListener]::new([uint32]$desktop.Id); $listener.add_TextChanged($onTextChanged) }
+                    if ($desktop) { $state.Listener = [CodexSharedSession.ClipboardLinkListener]::new([uint32]$desktop.Id); $state.Listener.add_TextChanged($onTextChanged) }
                 }
-                $chinese = [CodexSessionToTerminal.SystemAppearance]::UiLanguage().StartsWith('zh', [StringComparison]::OrdinalIgnoreCase)
+                $chinese = $snapshot.Chinese
                 $state.Text = Get-CstInterfaceText -Chinese $chinese
-                $menu.UpdateAppearance([CodexSessionToTerminal.SystemAppearance]::IsDark(), $chinese, [bool]$desktop)
+                $menu.UpdateAppearance($snapshot.Dark, $chinese, [bool]$desktop)
                 $tray.Text = if ($desktop) { $state.Text.TooltipReady } else { $state.Text.TooltipWaiting }
-                Update-CstPanel -Panel $panel -Rows @(Get-CstSessionRows -ControlDirectory $runDirectory) -Dark ([CodexSessionToTerminal.SystemAppearance]::IsDark()) -Chinese $chinese
-                $nextCheck = [DateTime]::UtcNow.AddSeconds(2)
+                Update-CstPanel -Panel $panel -Rows @($snapshot.Rows) -Dark $snapshot.Dark -Chinese $chinese
             }
-            if ($listener) { $listener.Pump() }
-            [Windows.Forms.Application]::DoEvents()
-            Start-Sleep -Milliseconds 50
-        }
+            if (!$reader.Pending -and [DateTime]::UtcNow -ge $state.NextCheck) {
+                [void](Start-CstStatusRead -Reader $reader -ControlDirectory $runDirectory -PreferredPid $(if ($state.Desktop) { $state.Desktop.Id } else { 0 }))
+                $state.NextCheck = [DateTime]::UtcNow.AddSeconds(2)
+            }
+            if ($state.Listener) { $state.Listener.Pump() }
+          } catch {
+            $state.Failure = $_
+            $timer.Stop(); $context.ExitThread()
+          } finally { $state.TickRunning = $false }
+        })
+        $timer.Start()
+        [Windows.Forms.Application]::Run($context)
+        if ($state.Failure) { throw $state.Failure }
     } finally {
+        if ($timer) { $timer.Stop(); $timer.Dispose() }
+        if ($context) { $context.Dispose() }
+        if ($reader) { Close-CstStatusReader -Reader $reader }
         if ($runDirectory) { try { Stop-CstRun -ControlDirectory $runDirectory } catch { } }
         if ($heartbeat) { $heartbeat.Dispose() }
-        if ($listener) { $listener.Dispose() }
+        if ($state.Listener) { $state.Listener.Dispose() }
         if ($panel) { $panel.AllowClose = $true; $panel.Dispose() }
         if ($tray) { $tray.Visible = $false; $tray.Dispose() }
         if ($menu) { $menu.Dispose() }

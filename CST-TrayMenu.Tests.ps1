@@ -16,7 +16,7 @@ try {
     if ($menu -isnot [Windows.Forms.ContextMenuStrip]) { throw 'The tray menu must remain a native ContextMenuStrip.' }
     if ($menu.AccessibleName -ne 'Codex Session to Terminal') { throw 'The full product name must be exposed.' }
     $actions = @($menu.Items | Where-Object { $_ -is [Windows.Forms.ToolStripMenuItem] })
-    if ($actions.Count -ne 3) { throw 'The menu must expose exactly three native actions.' }
+    if ($actions.Count -ne 2) { throw 'The menu must expose the session and exit actions.' }
     foreach ($item in $actions) {
         if (!$item.CanSelect -or !$item.Enabled) { throw 'Native menu actions must retain selection and keyboard navigation.' }
     }

@@ -93,8 +93,16 @@ try {
     foreach ($required in @('PrivilegesRequired=lowest', 'CloseApplications=no', 'RestartApplications=no',
         'ArchitecturesAllowed=x64os', 'UsePreviousAppDir=no', 'function InitializeUninstall',
         'function PrepareToInstall', 'CompareText(AppDirectory, ExpectedDirectory)', 'AttributeReparsePoint',
-        'FileOpenReadWrite or FileShareExclusive', 'Check: DesktopShortcutAvailable')) {
+        'FileOpenReadWrite or FileShareExclusive', 'Check: ShouldCreateDesktopShortcut',
+        'function IsProductShortcut', 'procedure ConsolidateShortcuts',
+        'if Trim(Shortcut.Arguments) <>', 'FileCopy(Path, BackupPath, True)')) {
         if (!$definition.Contains($required)) { throw "Installer constraint missing: $required" }
+    }
+    $iconsBlock = [regex]::Match($definition, '(?s)\[Icons\](.*?)\[UninstallDelete\]').Groups[1].Value
+    $icons = @($iconsBlock -split '\r?\n' | Where-Object { $_ -match '^Name:' })
+    if ($icons.Count -ne 2 -or @($icons | Where-Object { $_ -notmatch 'Filename: "\{app\}\\Start-CST\.cmd"' }).Count -ne 0 -or
+        $iconsBlock.Contains(' - Independent') -or $iconsBlock.Contains(' - Legacy Shared Startup')) {
+        throw 'Installation must expose only the standard product entry targeting the current tray.'
     }
     if ($definition -match '(?im)^\[(Run|UninstallRun|InstallDelete)\]') { throw 'The installer must not execute application actions.' }
     $deleteEntries = @($definition -split '\r?\n' | Where-Object { $_ -match '^Type:.*Name:' })

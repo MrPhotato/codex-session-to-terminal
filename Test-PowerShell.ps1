@@ -17,6 +17,7 @@ foreach ($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1') {
 & (Join-Path $PSScriptRoot 'Runtime-Discovery.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Cli-Compatibility.Tests.ps1')
 & (Join-Path $PSScriptRoot 'CST-Tray.Tests.ps1')
+& (Join-Path $PSScriptRoot 'CST-StatusReader.Tests.ps1')
 & (Join-Path $PSScriptRoot 'test\CST-Presence.Tests.ps1')
 & (Join-Path $PSScriptRoot 'CST-Panel.Tests.ps1')
 & (Join-Path $PSScriptRoot 'CST-TrayMenu.Tests.ps1')
