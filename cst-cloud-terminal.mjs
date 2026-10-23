@@ -287,7 +287,7 @@ export async function runCloudTerminal(options, dependencies = {}) {
       onPhase: phase => {
         const lines = {
           opening: ['正在临时打开会话以建立连接，随后返回原页面…', 'Temporarily opening the session to connect, then returning to your page…'],
-          'return-skipped': ['检测到页面或键鼠活动，保留你当前的页面。', 'Page or input activity detected; keeping your current page.'],
+          'return-skipped': ['保留当前页面，未自动返回。', 'Keeping the current page without automatic return.'],
           'return-unconfirmed': ['未能确认自动返回，请在桌面端查看；终端连接保持。', 'Automatic return was not confirmed. Check Desktop; the terminal connection is retained.'],
         };
         if (lines[phase]) output.write(lines[phase][chinese() ? 0 : 1] + '\n');
@@ -317,7 +317,7 @@ export function cloudTerminalError(error, locale = Intl.DateTimeFormat().resolve
     NO_CLOUD_SESSIONS: ['暂未列出可选云端会话。列表只包含最近和置顶会话，并不代表账号没有其他云聊天。', 'No online sessions are currently listed. Only recent and pinned sessions are included.'],
     NOT_CLOUD_SESSION: ['所选会话不是云端会话。', 'The selected session is not an online session.'],
     READ_ONLY_REQUIRED: ['云端终端只允许只读连接。', 'Online terminal sessions require a read-only connection.'],
-    CLOUD_PAGE_CHANGED: ['页面或键鼠活动已变化，未自动跳转。请在目标聊天重新按快捷键。', 'The page or input activity changed; no automatic navigation was performed. Use the shortcut again in the intended chat.'],
+    CLOUD_PAGE_CHANGED: ['无法确认原来的聊天页面，未自动跳转。请在目标聊天重新按快捷键。', 'The original chat page could not be confirmed; no automatic navigation was performed. Use the shortcut again in the intended chat.'],
     CLOUD_IDENTITY_UNCONFIRMED: ['无法核对这条云端会话的最新消息，未显示候选会话。请在桌面端打开目标聊天后重试。', 'The latest online message could not be verified. The candidate session was not displayed. Open the intended chat in Desktop and retry.'],
     UNSUPPORTED_CLOUD_PROJECTION: ['这条云会话的内容格式尚不支持终端显示，请继续在桌面端查看。', 'This online session has content not yet supported by the terminal. View it in Desktop.'],
     NO_OWNER: ['已识别这条云端会话，但当前 Work 页面未建立原生 Codex 连接。请先在桌面端的 Codex 视图打开这条会话，再连接只读终端。 (NO_OWNER)', 'The online session was identified, but its Work page has no native Codex connection. Open this session in Desktop\'s Codex view, then reconnect the read-only terminal. (NO_OWNER)'],

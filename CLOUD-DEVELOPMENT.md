@@ -862,3 +862,35 @@ The full 507-test JavaScript suite and Windows/PowerShell checks passed, followe
 by 48 targeted recovery/terminal tests after adding unchanged-page handling and
 the local-title conflict guard. No ChatGPT installation, global configuration,
 credentials, messages or manually enrolled association was modified.
+
+## Keep connecting when the user selects the terminal (23 October 2026)
+
+The user confirmed the previous untitled discovery fix through the physical
+shortcut: the intended read-only terminal opened with the correct title and
+content. A subsequent report exposed an unrelated recovery guard: it compared
+Windows' global last-input tick with the value captured before opening the
+terminal. Clicking that new terminal or using another application changed the
+tick and could reject a valid missing-owner recovery as `CLOUD_PAGE_CHANGED`.
+
+Recovery now checks the captured Desktop process generation, window, document
+and expected title independently of global input activity. Selection still
+starts from the foreground Desktop window, and leaving that window before the
+terminal appears cancels the initial capture. Once the terminal exists, moving
+focus to it or another application does not cancel connection or disqualify the
+return attempt. Actual source-page changes still prevent pending navigation;
+changes after navigation prevent Back without discarding a usable connection.
+
+Back receives the latest page/input snapshot. Its existing native one-shot
+check remains: input arriving during that short final check can suppress Back,
+but never causes connection failure or a repeated navigation attempt. This
+supersedes the earlier requirement for no global input throughout recovery.
+No application focus is requested by the recovery module.
+
+All 521 JavaScript tests passed, including 69 focused recovery, terminal and
+context tests. Regression cases advance global input before recovery, during
+helper preparation, forward navigation and attachment, and at every snapshot;
+they check both titled and message-linked untitled chats. Changed page/window
+identities still block navigation or return, and a native Back refusal retains
+the attachment. These are automated behavioral checks; physical focus switching
+during a new cold-owner connection still needs live acceptance. The change is
+loaded by new terminals and does not require restarting Desktop or the tray.

@@ -8,8 +8,9 @@ const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4})
 const inputTick = value => Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff;
 const identity = (a, b) => validDesktopTitleContext(a) && validDesktopTitleContext(b) &&
   ['pid', 'window', 'started'].every(key => a[key] === b[key]);
-const untouched = (source, actual) => identity(source, actual) && actual.title === source.title &&
-  inputTick(source.lastInputTick) && actual.lastInputTick === source.lastInputTick;
+// Global input includes clicks in the newly opened terminal and other apps.
+// Follow the captured Desktop window; its page checks are independent of focus.
+const sameWindowTitle = (source, actual) => identity(source, actual) && actual.title === source.title;
 
 function loadedUntitledPageTitle(attachment, threadId) {
   const state = attachment?.state;
@@ -57,7 +58,7 @@ export async function attachCloudWithPageRecovery({ connect, plan, createNavigat
       now() - context.capturedAt > 30000) throw fail('CLOUD_PAGE_CHANGED');
   const refresh = () => readContext(context, { signal });
   const before = await refresh();
-  if (!untouched(context, before) || before.documentRuntimeId !== context.documentRuntimeId) throw fail('CLOUD_PAGE_CHANGED');
+  if (!sameWindowTitle(context, before) || before.documentRuntimeId !== context.documentRuntimeId) throw fail('CLOUD_PAGE_CHANGED');
   let navigator, navigated = false, opened, openedAt, connected;
   try {
     navigator = await createNavigator([threadId]);
@@ -77,7 +78,7 @@ export async function attachCloudWithPageRecovery({ connect, plan, createNavigat
       if (fresh?.clientMessageId !== linkedEvidence.clientMessageId) throw fail('CLOUD_IDENTITY_UNCONFIRMED');
     }
     const current = await refresh();
-    if (!untouched(context, current) || current.documentRuntimeId !== context.documentRuntimeId) throw fail('CLOUD_PAGE_CHANGED');
+    if (!sameWindowTitle(context, current) || current.documentRuntimeId !== context.documentRuntimeId) throw fail('CLOUD_PAGE_CHANGED');
     check(); phase('opening');
     const result = await navigator.navigateConversation(threadId);
     if (result?.navigated !== true) throw fail('NAVIGATION_OUTCOME_UNKNOWN');
@@ -104,20 +105,20 @@ export async function attachCloudWithPageRecovery({ connect, plan, createNavigat
           ? ['ChatGPT', 'Codex', ...(fallbackTitle ? [fallbackTitle] : [])] : [linkedEvidence ? nativeTitle : context.title];
         const expectedOpenedTitle = allowedTitles.includes(opened?.title);
         // One supported loading transition: generic page title -> the verified
-        // native prompt title. A changed input epoch/document still cancels Back.
+        // native prompt title. An unrelated page/document still cancels Back.
         const expectedCurrentTitle = current?.title === opened?.title ||
           ['ChatGPT', 'Codex'].includes(opened?.title) && fallbackTitle != null && current?.title === fallbackTitle;
         if (linkedEvidence && nativeTitle == null && context.title !== fallbackTitle &&
-            untouched(context, opened) && untouched(context, current) &&
+            sameWindowTitle(context, opened) && sameWindowTitle(context, current) &&
             opened.documentRuntimeId === context.documentRuntimeId && current.documentRuntimeId === context.documentRuntimeId) {
           // Desktop may resolve an already-known native target to the current
           // Work page. No Back is needed, and Back would leave the user's chat.
           phase('original-page-preserved');
         } else if (now() >= openedAt && now() - openedAt <= 45000 && expectedOpenedTitle && expectedCurrentTitle &&
-            untouched({ ...context, title: opened.title }, opened) &&
-            untouched({ ...context, title: current.title }, current) && current.documentRuntimeId === opened.documentRuntimeId) {
-          // Exactly one return dispatch, and only without any keyboard/mouse
-          // activity since the shortcut. Unknown results are never retried.
+            sameWindowTitle({ ...context, title: opened.title }, opened) &&
+            sameWindowTitle({ ...context, title: current.title }, current) && current.documentRuntimeId === opened.documentRuntimeId) {
+          // Exactly one return attempt using a fresh snapshot, not the input
+          // epoch from the shortcut. Unknown results are never retried.
           // The normal Desktop navigation pushed one entry. Use its actual
           // Back control, preserving the original route instead of guessing a
           // frontend ID from a title. The native helper rechecks this exact

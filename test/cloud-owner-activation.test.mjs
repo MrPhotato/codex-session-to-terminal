@@ -86,8 +86,8 @@ test('linked recovery independently rejects changed native metadata before readi
   }
 });
 
-test('linked untitled native recovery preserves user input and subsequent page changes', async () => {
-  for (const change of [{ lastInputTick: 80001 }, { title: 'Another page' },
+test('linked untitled native recovery preserves subsequent page and window changes', async () => {
+  for (const change of [{ title: 'Another page' },
     { documentRuntimeId: '42,8,11' }, { window: 457 }, { pid: 124 }]) {
     const f = linkedFixture(), connect = f.options.connect;
     f.options.connect = async () => { const resource = await connect(); Object.assign(f.current, change); return resource; };
@@ -132,8 +132,9 @@ test('a verified untitled owner may finish loading its first-prompt title before
       return resource;
     };
     assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
-    assert.equal(f.calls.some(call => call[0] === 'back'), mutate == null);
-    assert.equal(f.phases.at(-1), mutate == null ? 'returned' : 'return-skipped');
+    const shouldReturn = mutate == null || mutate === 'input';
+    assert.equal(f.calls.some(call => call[0] === 'back'), shouldReturn);
+    assert.equal(f.phases.at(-1), shouldReturn ? 'returned' : 'return-skipped');
   }
 });
 
@@ -145,7 +146,9 @@ test('an existing owner connects immediately with no UI inspection or navigation
 
 test('Desktop resolving an untitled native target to the unchanged Work page does not go Back', async () => {
   const f = linkedFixture();
-  f.navigator.navigateConversation = async target => { f.calls.push(['navigate', target]); return { navigated: true }; };
+  f.navigator.navigateConversation = async target => {
+    f.calls.push(['navigate', target]); f.current.lastInputTick++; return { navigated: true };
+  };
   assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
   assert.equal(f.phases.at(-1), 'original-page-preserved');
   assert.equal(f.calls.some(call => call[0] === 'back'), false);
@@ -157,6 +160,43 @@ test('a cold owner opens once, connects, then returns once and releases the navi
   assert.deepEqual(f.calls, [['connect'], ['create', threadId], ['read', threadId],
     ['navigate', threadId], ['connect'], ['back'], ['close']]);
   assert.deepEqual(f.phases, ['opening', 'connecting', 'returned']);
+});
+
+test('input in other windows during each recovery stage allows connection and passes fresh input to Back', async t => {
+  for (const makeFixture of [fixture, linkedFixture]) {
+    for (const stage of ['before-recovery', 'preparation', 'navigation', 'connection', 'every-snapshot']) {
+      await t.test(`${makeFixture.name}: ${stage}`, async () => {
+        const f = makeFixture();
+        if (stage === 'before-recovery') f.current.lastInputTick++;
+        if (stage === 'preparation') {
+          const create = f.options.createNavigator;
+          f.options.createNavigator = async targets => { const result = await create(targets); f.current.lastInputTick++; return result; };
+        }
+        if (stage === 'navigation') {
+          const navigate = f.navigator.navigateConversation;
+          f.navigator.navigateConversation = async target => { const result = await navigate(target); f.current.lastInputTick++; return result; };
+        }
+        if (stage === 'connection') {
+          const connect = f.options.connect;
+          f.options.connect = async () => { const resource = await connect(); f.current.lastInputTick++; return resource; };
+        }
+        if (stage === 'every-snapshot') {
+          const read = f.dependencies.readContext;
+          f.dependencies.readContext = async () => { f.current.lastInputTick++; return read(); };
+        }
+        let returnedContext;
+        const restore = f.dependencies.restorePage;
+        f.dependencies.restorePage = async actual => { returnedContext = actual; return restore(actual); };
+        assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
+        assert.equal(f.phases.at(-1), 'returned');
+        assert.equal(f.calls.filter(call => call[0] === 'navigate').length, 1);
+        assert.equal(f.calls.filter(call => call[0] === 'back').length, 1);
+        assert.equal(returnedContext.lastInputTick, f.current.lastInputTick);
+        assert.notEqual(returnedContext.lastInputTick, context.lastInputTick);
+        assert.equal(f.options.plan.context.lastInputTick, context.lastInputTick);
+      });
+    }
+  }
 });
 
 test('only an exact missing-owner failure with a fresh source plan permits recovery', async () => {
@@ -173,9 +213,9 @@ test('only an exact missing-owner failure with a fresh source plan permits recov
   }
 });
 
-test('changed source identity, page or input before dispatch prevents navigation', async () => {
+test('changed source identity or page before dispatch prevents navigation', async () => {
   for (const change of [{ pid: 124 }, { window: 457 }, { started: '639000000000000002' },
-    { title: 'Other chat' }, { documentRuntimeId: '42,8,10' }, { lastInputTick: 80001 }]) {
+    { title: 'Other chat' }, { documentRuntimeId: '42,8,10' }]) {
     const f = fixture(); Object.assign(f.current, change);
     await assert.rejects(attachCloudWithPageRecovery(f.options, f.dependencies), { code: 'CLOUD_PAGE_CHANGED' });
     assert.deepEqual(f.calls, [['connect']]);
@@ -183,11 +223,14 @@ test('changed source identity, page or input before dispatch prevents navigation
 });
 
 test('changes during navigator preparation are caught by the second source check', async () => {
-  const f = fixture(), read = f.navigator.readConversation;
-  f.navigator.readConversation = async target => { const result = await read(target); f.current.lastInputTick++; return result; };
-  await assert.rejects(attachCloudWithPageRecovery(f.options, f.dependencies), { code: 'CLOUD_PAGE_CHANGED' });
-  assert.equal(f.calls.some(call => call[0] === 'navigate'), false);
-  assert.deepEqual(f.calls.at(-1), ['close']);
+  for (const change of [{ title: 'Other chat' }, { documentRuntimeId: '42,8,10' },
+    { pid: 124 }, { window: 457 }, { started: '639000000000000002' }]) {
+    const f = fixture(), read = f.navigator.readConversation;
+    f.navigator.readConversation = async target => { const result = await read(target); Object.assign(f.current, change); return result; };
+    await assert.rejects(attachCloudWithPageRecovery(f.options, f.dependencies), { code: 'CLOUD_PAGE_CHANGED' });
+    assert.equal(f.calls.some(call => call[0] === 'navigate'), false);
+    assert.deepEqual(f.calls.at(-1), ['close']);
+  }
 });
 
 test('native target is independently read back before dispatch', async () => {
@@ -198,8 +241,9 @@ test('native target is independently read back before dispatch', async () => {
   }
 });
 
-test('any new input or changed current page suppresses return without losing the attachment', async () => {
-  for (const change of [{ lastInputTick: 80001 }, { title: 'Other chat' }, { documentRuntimeId: '42,8,10' }, { window: 457 }]) {
+test('a changed current page or window suppresses return without losing the attachment', async () => {
+  for (const change of [{ title: 'Other chat' }, { documentRuntimeId: '42,8,10' },
+    { window: 457 }, { pid: 124 }, { started: '639000000000000002' }]) {
     const f = fixture(), connect = f.options.connect;
     f.options.connect = async () => { const resource = await connect(); Object.assign(f.current, change); return resource; };
     assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
@@ -208,18 +252,29 @@ test('any new input or changed current page suppresses return without losing the
   }
 });
 
-test('input during forward navigation or an unavailable snapshot never authorizes returning', async () => {
-  for (const unreadable of [true, false]) {
-    const f = fixture();
-    f.navigator.navigateConversation = async target => {
-      f.calls.push(['navigate', target]);
-      if (unreadable) f.current = null; else f.current.lastInputTick++;
-      return { navigated: true };
-    };
-    assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
-    assert.equal(f.calls.filter(call => call[0] === 'navigate').length, 1);
-    assert.equal(f.phases.at(-1), 'return-skipped');
-  }
+test('an unavailable snapshot never authorizes returning', async () => {
+  const f = fixture();
+  f.navigator.navigateConversation = async target => {
+    f.calls.push(['navigate', target]); f.current = null; return { navigated: true };
+  };
+  assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
+  assert.equal(f.calls.filter(call => call[0] === 'navigate').length, 1);
+  assert.equal(f.phases.at(-1), 'return-skipped');
+});
+
+test('input arriving during the native Back guard skips return without retrying or losing the attachment', async () => {
+  const f = linkedFixture();
+  let closed = false;
+  f.resource.close = () => { closed = true; };
+  f.dependencies.restorePage = async actual => {
+    assert.deepEqual(actual, f.current);
+    f.calls.push(['back']); f.current.lastInputTick++;
+    return { dispatched: false, status: 'context-changed' };
+  };
+  assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
+  assert.equal(f.calls.filter(call => call[0] === 'back').length, 1);
+  assert.equal(f.phases.at(-1), 'return-skipped');
+  assert.equal(closed, false);
 });
 
 test('uncertain forward navigation is not retried and cannot trigger a return', async () => {
