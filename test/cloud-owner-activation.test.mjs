@@ -111,10 +111,44 @@ test('a linked untitled native page cannot use the original title or an unrelate
   }
 });
 
+test('a verified untitled owner may finish loading its first-prompt title before guarded Back', async () => {
+  const prompt = 'A long plain-text question about memory requirements and cloud execution capacity.';
+  const generated = prompt.slice(0, 59).trimEnd() + '…';
+  for (const mutate of [null, 'input', 'document', 'unrelated', 'wrong-thread', 'partial', 'rich']) {
+    const f = linkedFixture(), connect = f.options.connect;
+    f.resource.state = { id: threadId, hostId: 'durable', title: null, turnHistory: { kind: 'canonical', history: {
+      entitiesByKey: { first: { turnId: 'first', itemsPagination: { hasLoadedOldest: true },
+        items: [{ type: 'userMessage', content: [{ type: 'text', text: prompt }] }] } },
+      islands: [{ olderBoundary: { status: 'exhausted' }, newerBoundary: { status: 'exhausted' }, entries: [{ value: 'first' }] }],
+    } } };
+    f.options.connect = async () => {
+      const resource = await connect(); f.current.title = generated;
+      if (mutate === 'input') f.current.lastInputTick++;
+      if (mutate === 'document') f.current.documentRuntimeId = '42,8,11';
+      if (mutate === 'unrelated') f.current.title = 'Other page';
+      if (mutate === 'wrong-thread') resource.state.id = frontendId;
+      if (mutate === 'partial') resource.state.turnHistory.history.islands[0].olderBoundary.status = 'loading';
+      if (mutate === 'rich') resource.state.turnHistory.history.entitiesByKey.first.items[0].content[0].text = '**' + prompt;
+      return resource;
+    };
+    assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
+    assert.equal(f.calls.some(call => call[0] === 'back'), mutate == null);
+    assert.equal(f.phases.at(-1), mutate == null ? 'returned' : 'return-skipped');
+  }
+});
+
 test('an existing owner connects immediately with no UI inspection or navigation', async () => {
   const f = fixture(); f.attempts = 1;
   assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
   assert.deepEqual(f.calls, [['connect']]); assert.equal(f.reads, 0);
+});
+
+test('Desktop resolving an untitled native target to the unchanged Work page does not go Back', async () => {
+  const f = linkedFixture();
+  f.navigator.navigateConversation = async target => { f.calls.push(['navigate', target]); return { navigated: true }; };
+  assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
+  assert.equal(f.phases.at(-1), 'original-page-preserved');
+  assert.equal(f.calls.some(call => call[0] === 'back'), false);
 });
 
 test('a cold owner opens once, connects, then returns once and releases the navigator', async () => {

@@ -799,3 +799,66 @@ it does not establish live hotkey capture or automatic return for this newly
 associated untitled conversation. The earlier dedicated-chat navigation/return
 validation remains the UI evidence for the recovery path. If page or input state
 changes during the excursion, the implementation deliberately skips Back.
+
+## General untitled discovery and live-turn display (23 October 2026)
+
+A second untitled cloud chat demonstrated that the private association added
+above was not a general resolver. The shortcut diagnostic also showed a missing
+title context. Read-only title capture now tolerates incidental input while
+requiring the same process, window, document and title on both observations.
+Its timeout is four seconds, and the tray records a bounded reason and duration.
+Navigation and Back retain their separate last-input checks.
+
+Without an enrolled hint or an exact native title, the resolver reads the last
+four turns of the selected frontend and each recent/pinned durable candidate,
+at most 4096 characters per item. Two complete, ordered user messages nominate
+one candidate; duplicate matches, failed reads, truncation and stale frontend
+IDs fail closed. The scan is bounded to 64 candidates, three concurrent reads
+through one official helper, and 18 seconds excluding startup/list latency.
+The suggestion is not persisted. A fresh frontend message ID must match the
+latest canonical native user receipt before history or presence is exposed.
+This remains bounded directory evidence, not proof of global fork uniqueness.
+The manual list now includes readable frontend names before native records.
+
+Native continuation can contain several user messages in one turn. The latest
+admitted client ID is checked while preserving the initial user/root-ID
+invariant. A server-started live turn has a real turn UUID and start timestamp
+but no pagination fields yet; its fresh frontend receipt can verify that
+representation, including its completed/idle form. Conflicting supplied root
+IDs, noncanonical tails, unresolved steering and changed receipts still fail.
+
+The live chat also exposed a Desktop-only `receiverThreads` cache attached to
+collaboration history. Source inspection confirmed the official wire record
+already carries `receiverThreadIds`. The adapter validates and omits only the
+extra loaded-thread cache, retaining the collaboration item and its original
+IDs/status/content. It does not expose child-chat cached histories to the CLI.
+
+Untitled native pages can transition from a generic loading title to the first
+plain-text prompt, truncated by Desktop to 60 UTF-16 code units. Guarded Back
+accepts that exact verified transition; rich Markdown title derivations remain
+unresolved. If Desktop resolves an already-known native target to the unchanged
+Work page, no Back is dispatched. User input or unrelated page changes still
+win over automatic navigation.
+
+Live installed validation used actual title capture, official read tools,
+native IPC and the unmodified Windows CLI. The previously unresolved chat was
+automatically selected without adding a private association; its frontend
+title, content and permanent read-only banner displayed in 24,948 ms. The
+request ledger contained no writes. A new user message arrived during an
+earlier attempt and the changed receipt correctly prevented display; a fresh
+attempt verified the active turn and succeeded. Only the test-owned CLI and
+follower were closed.
+
+A real initial missing-owner attempt opened the native view and established
+the connection. Subsequent recovery tests injected that initial condition to
+preserve the now-existing owner. Actual navigation then kept the original Work
+page, confirmed by UIA and screenshot, with an unchanged input epoch; therefore
+Back was correctly unnecessary. The generic-to-generated-title Back transition
+has regression coverage but has not yet been repeated on a fresh cold owner.
+The physical shortcut and the new tray timeout still need a newly started tray
+acceptance; the running tray was deliberately not restarted over user terminals.
+
+The full 507-test JavaScript suite and Windows/PowerShell checks passed, followed
+by 48 targeted recovery/terminal tests after adding unchanged-page handling and
+the local-title conflict guard. No ChatGPT installation, global configuration,
+credentials, messages or manually enrolled association was modified.

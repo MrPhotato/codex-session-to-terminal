@@ -20,7 +20,7 @@ test('recheck is a bounded hidden read against the exact source window, never a 
   const executeFn = async (helper, args, options) => {
     calls++; assert.match(helper, /Desktop-Context\.exe$/u);
     assert.deepEqual(args, ['--pid', '123', '--window', '456', '--started', context.started]);
-    assert.equal(options.windowsHide, true); assert.equal(options.shell, false); assert.equal(options.timeout, 1500);
+    assert.equal(options.windowsHide, true); assert.equal(options.shell, false); assert.equal(options.timeout, 4000);
     return { stdout: JSON.stringify(context) };
   };
   assert.equal(await recheckDesktopTitleContext(context, { executeFn, now: () => 100010 }), true);
@@ -71,7 +71,7 @@ test('fresh reads refresh the exact window generation without treating a title o
     executeFn: async (file, args, options) => {
       assert.match(file, /Desktop-Context\.exe$/u);
       assert.deepEqual(args, ['--pid', '123', '--window', '456', '--started', context.started]);
-      assert.equal(options.windowsHide, true); assert.equal(options.shell, false); assert.equal(options.timeout, 1500);
+      assert.equal(options.windowsHide, true); assert.equal(options.shell, false); assert.equal(options.timeout, 4000);
       return { stdout: JSON.stringify(actual) };
     } });
   assert.deepEqual(refreshed, { ...actual, capturedAt: 140001 });

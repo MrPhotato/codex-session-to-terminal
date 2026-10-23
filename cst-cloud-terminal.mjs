@@ -9,7 +9,7 @@ import { createDesktopButtonAction } from './desktop-button-action.mjs';
 import { matchCloudThreadByTitle, matchesCloudTitleRead } from './cloud-title-selection.mjs';
 import { decodeDesktopTitleContext, recheckDesktopTitleContext } from './desktop-title-context.mjs';
 import { attachCloudWithPageRecovery } from './cloud-owner-activation.mjs';
-import { parseCloudIdentityLinks, findLinkedCloudCandidate, frontendMessageEvidence, matchesCloudMessageEvidence } from './cloud-identity-links.mjs';
+import { parseCloudIdentityLinks, findLinkedCloudCandidate, frontendMessageEvidence, matchesCloudMessageEvidence, cloudFrontends, discoverCloudCandidate } from './cloud-identity-links.mjs';
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const fail = code => Object.assign(new Error(code), { code });
@@ -111,6 +111,7 @@ export async function runCloudTerminal(options, dependencies = {}) {
     createButtonAction = createDesktopButtonAction,
     attachWithRecovery = attachCloudWithPageRecovery,
     loadIdentityLinks = loadCloudIdentityLinks,
+    discoverCandidate = discoverCloudCandidate,
     environment = process.env,
     now = Date.now,
     writeDiagnostics = (home, value) => writeFile(join(home, 'diagnostics.json'), JSON.stringify(value, null, 2) + '\n', { flag: 'w' }),
@@ -163,7 +164,7 @@ export async function runCloudTerminal(options, dependencies = {}) {
     diagnosticHome = home;
     await wait(adopt(measure('createReader', () => createReader({ backendPath: options.backendPath, nodePath: process.execPath,
       powershellPath: options.powershellPath, cwd: home })), value => { reader = value; }));
-    let original, recoveryPlan, messageEvidence;
+    let original, recoveryPlan, messageEvidence, frontendTitle;
     const threadId = options.threadId ?? await wait((async () => {
       const list = await measure('listConversations', () => reader.listConversations({ limit: 50 }));
       const titleContext = options.titleContext;
@@ -176,7 +177,7 @@ export async function runCloudTerminal(options, dependencies = {}) {
           const native = evidence && await reader.readConversation(link.nativeId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 });
           if (evidence && native.thread?.id === link.nativeId && native.thread.kind === 'codex' && native.thread.hostId === 'durable' &&
               await recheckTitleContext(titleContext, { signal: lifetime.signal })) {
-            original = native; messageEvidence = evidence;
+            original = native; messageEvidence = evidence; frontendTitle = titleContext.title;
             recoveryPlan = { threadId: link.nativeId, context: titleContext, linkedEvidence: evidence, nativeTitle: native.thread.title ?? null };
             diagnostics.candidateFound = true;
             await publishDiagnostics('linked-candidate');
@@ -215,8 +216,38 @@ export async function runCloudTerminal(options, dependencies = {}) {
         } catch { /* Unavailable or changed candidates fall back to selection. */ }
       }
       if (lifetime.signal.aborted) throw fail('ABORTED');
+      const frontends = cloudFrontends(list);
+      const localTitleConflict = titleContext && [...(list.pinnedThreads ?? []), ...(list.threads ?? [])].some(row =>
+        row?.title === titleContext.title && row.kind !== 'chatgpt' && !(row.kind === 'codex' && row.hostId === 'durable'));
+      const matching = titleContext && !localTitleConflict ? frontends.filter(row => row.title === titleContext.title) : [];
+      const resolveFrontend = async frontend => {
+        output.write(chinese() ? '正在核对聊天与云端执行记录…\n' : 'Checking the chat against cloud execution records…\n');
+        const result = await measure('discoverIdentity', () => discoverCandidate(list, frontend,
+          (target, args) => reader.readConversation(target, args), { signal: lifetime.signal }));
+        if (lifetime.signal.aborted) throw fail('ABORTED');
+        if (!result) return null;
+        original = result.native; messageEvidence = result.evidence; frontendTitle = result.title;
+        if (titleContext && frontend.title === titleContext.title) {
+          if (!await recheckTitleContext(titleContext, { signal: lifetime.signal })) throw fail('CLOUD_PAGE_CHANGED');
+          recoveryPlan = { threadId: original.thread.id, context: titleContext,
+            linkedEvidence: messageEvidence, nativeTitle: original.thread.title ?? null };
+        }
+        diagnostics.candidateFound = true;
+        await publishDiagnostics('message-candidate');
+        return original.thread.id;
+      };
+      if (!candidate && matching.length === 1) {
+        const found = await resolveFrontend(matching[0]);
+        if (found) return found;
+      }
       await publishDiagnostics('manual-selection');
-      return chooseThread(cloudCandidates(list), { input, output, signal: lifetime.signal });
+      output.write(chinese() ? '未能自动确定当前聊天，请按聊天名称选择。\n' : 'Current chat could not be identified; select its name.\n');
+      const selected = await chooseThread([...frontends.map(row => ({ ...row, title: presenceTitle(row.title) })), ...cloudCandidates(list)], { input, output, signal: lifetime.signal });
+      const frontend = frontends.find(row => row.id === selected);
+      if (!frontend) return selected;
+      const found = await resolveFrontend(frontend);
+      if (!found) throw fail('CLOUD_IDENTITY_UNCONFIRMED');
+      return found;
     })());
     await publishDiagnostics('explicit-thread');
     if (!UUID.test(threadId ?? '')) throw fail('INVALID_ARGUMENTS');
@@ -225,7 +256,7 @@ export async function runCloudTerminal(options, dependencies = {}) {
     presence = createPresence({ controlDirectory: options.controlDirectory, threadId });
     output.write('Online Session Read Only for Terminal\n');
     let identityVerified = !messageEvidence;
-    const displayTitle = messageEvidence ? presenceTitle(options.titleContext.title) : undefined;
+    const displayTitle = messageEvidence ? presenceTitle(frontendTitle) : undefined;
     const updatePresence = state => presence.updateState(displayTitle ? { ...state, title: displayTitle } : state);
     const connect = async () => {
       let ready = false, setupError;

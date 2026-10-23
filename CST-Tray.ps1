@@ -234,14 +234,17 @@ function Close-CstTitleProbe {
 
 function Receive-CstTitleProbe {
     param([Parameter(Mandatory)]$Probe, [DateTime]$Now=[DateTime]::UtcNow)
-    $result = [pscustomobject]@{ Context=$null }
+    $result = [pscustomobject]@{ Context=$null; Reason='helper-unavailable'; ElapsedMs=0 }
     if (!$Probe.Process) { return $result }
     $age = ($Now - $Probe.At).TotalMilliseconds
-    if ($age -ge 0 -and $age -lt 1500 -and
+    $result.ElapsedMs = [Math]::Max(0, [int]$age)
+    $result.Reason = 'timeout'
+    if ($age -ge 0 -and $age -lt 4000 -and
         (!$Probe.Process.HasExited -or !$Probe.Output.IsCompleted -or !$Probe.Errors.IsCompleted)) { return }
     try {
-        if ($age -lt 0 -or $age -ge 1500 -or !$Probe.Process.HasExited -or $Probe.Process.ExitCode -ne 0 -or
+        if ($age -lt 0 -or $age -ge 4000 -or !$Probe.Process.HasExited -or $Probe.Process.ExitCode -ne 0 -or
             !$Probe.Output.IsCompletedSuccessfully -or !$Probe.Errors.IsCompletedSuccessfully) { return $result }
+        $result.Reason = 'invalid-observation'
         $raw = $Probe.Output.Result
         if ($raw.Length -gt 8192 -or $Probe.Errors.Result.Length) { return $result }
         $value = $raw | ConvertFrom-Json -ErrorAction Stop
@@ -251,6 +254,7 @@ function Receive-CstTitleProbe {
             $value.title -isnot [string] -or $value.title.Length -eq 0 -or $value.title.Length -gt 512) { return $result }
         $value | Add-Member -NotePropertyName capturedAt -NotePropertyValue ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) -Force
         $result.Context = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($value | ConvertTo-Json -Compress)))
+        $result.Reason = 'matched'
     } catch { } finally { Close-CstTitleProbe -Probe $Probe }
     return $result
 }
@@ -445,13 +449,14 @@ function Start-CstTray {
                 if ([CodexSharedSession.TerminalWindows]::Foreground() -ne $pending.SourceWindow -or
                     [CodexSharedSession.ClipboardLinkListener]::ForegroundProcessId() -ne $pending.DesktopPid -or
                     $state.Desktop.Id -ne $pending.DesktopPid -or $state.Desktop.StartTicks -ne $pending.DesktopStartTicks -or
-                    ([DateTime]::UtcNow - $pending.At).TotalMilliseconds -gt 3000) {
+                    ([DateTime]::UtcNow - $pending.At).TotalMilliseconds -gt 7000) {
                     Close-CstTitleProbe -Probe $state.TitleProbe; $state.TitleProbe=$null
                     return
                 }
                 $titleResult = Receive-CstTitleProbe -Probe $state.TitleProbe
                 if ($titleResult) {
                     $state.TitleProbe=$null
+                    try { @{ reason=$titleResult.Reason; elapsedMs=$titleResult.ElapsedMs; at=[DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDirectory 'last-title-probe.json') -Encoding utf8 } catch { }
                     try {
                         $current = Get-Process -Id $pending.DesktopPid -ErrorAction Stop
                         if ($current.StartTime.ToUniversalTime().Ticks -eq $pending.DesktopStartTicks) {

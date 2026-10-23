@@ -209,7 +209,10 @@ namespace CstDesktopContext
                 WindowIdentity after = ops.InspectTarget(request.Window);
                 if (!MatchesRequest(request, after) || !Navigation.SameIdentity(before, after)) return result;
                 uint? inputAfter = ops.ReadLastInputTick();
-                if (!inputAfter.HasValue || inputAfter.Value != inputBefore.Value) return result;
+                // Reading a stable page must not require holding the mouse still.
+                // Navigation/Back separately compare this final input epoch with
+                // their saved epoch immediately before acting.
+                if (!inputAfter.HasValue) return result;
                 string[] id = new string[first[0].RuntimeId.Length];
                 for (int index = 0; index < id.Length; index++) id[index] = first[0].RuntimeId[index].ToString(CultureInfo.InvariantCulture);
                 result.Status = "ready";

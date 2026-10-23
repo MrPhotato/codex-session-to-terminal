@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { readDesktopTitleContext, restoreDesktopPage, validDesktopTitleContext } from './desktop-title-context.mjs';
 import { frontendMessageEvidence } from './cloud-identity-links.mjs';
+import { orderedDesktopTurns } from './desktop-events.mjs';
 
 const fail = code => Object.assign(new Error(code), { code });
 const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(value);
@@ -9,6 +10,26 @@ const identity = (a, b) => validDesktopTitleContext(a) && validDesktopTitleConte
   ['pid', 'window', 'started'].every(key => a[key] === b[key]);
 const untouched = (source, actual) => identity(source, actual) && actual.title === source.title &&
   inputTick(source.lastInputTick) && actual.lastInputTick === source.lastInputTick;
+
+function loadedUntitledPageTitle(attachment, threadId) {
+  const state = attachment?.state;
+  if (state?.id !== threadId || state.hostId !== 'durable' || state.title != null ||
+      state.turnHistory?.kind !== 'canonical' ||
+      state.turnHistory.history?.islands?.[0]?.olderBoundary?.status !== 'exhausted') return null;
+  try {
+    const first = orderedDesktopTurns(state)[0];
+    const user = first?.items?.[0];
+    if (first.itemsPagination?.hasLoadedOldest !== true || user?.type !== 'userMessage' ||
+        user.content?.length !== 1 || user.content[0].type !== 'text') return null;
+    const raw = user.content[0].text;
+    // The current Desktop uses the first plain-text prompt, whitespace folded,
+    // truncated to 60 UTF-16 code units. Rich Markdown/context wrappers need a
+    // renderer we do not reproduce here; leave those return cases unresolved.
+    if (typeof raw !== 'string' || raw.length > 4096 || /[<>{}\[\]`*_#|\\\p{Cf}]/u.test(raw)) return null;
+    const text = raw.trim().replace(/\s+/gu, ' ');
+    return text.length ? text.length <= 60 ? text : `${text.slice(0, 59).trimEnd()}…` : null;
+  } catch { return null; }
+}
 
 // Navigation is an explicitly authorized UI excursion, not a passive owner
 // creation request. No messages/settings/ownership claims are sent. The caller
@@ -78,11 +99,23 @@ export async function attachCloudWithPageRecovery({ connect, plan, createNavigat
     if (navigated && !signal?.aborted) {
       try {
         const current = await refresh();
-        const expectedOpenedTitle = linkedEvidence && nativeTitle == null
-          ? ['ChatGPT', 'Codex'].includes(opened?.title) : opened?.title === (linkedEvidence ? nativeTitle : context.title);
-        const openedContext = expectedOpenedTitle ? { ...context, title: opened.title } : context;
-        if (now() >= openedAt && now() - openedAt <= 45000 && expectedOpenedTitle && untouched(openedContext, opened) &&
-            untouched(openedContext, current) && current.documentRuntimeId === opened.documentRuntimeId) {
+        const fallbackTitle = linkedEvidence && nativeTitle == null ? loadedUntitledPageTitle(connected, threadId) : null;
+        const allowedTitles = linkedEvidence && nativeTitle == null
+          ? ['ChatGPT', 'Codex', ...(fallbackTitle ? [fallbackTitle] : [])] : [linkedEvidence ? nativeTitle : context.title];
+        const expectedOpenedTitle = allowedTitles.includes(opened?.title);
+        // One supported loading transition: generic page title -> the verified
+        // native prompt title. A changed input epoch/document still cancels Back.
+        const expectedCurrentTitle = current?.title === opened?.title ||
+          ['ChatGPT', 'Codex'].includes(opened?.title) && fallbackTitle != null && current?.title === fallbackTitle;
+        if (linkedEvidence && nativeTitle == null && context.title !== fallbackTitle &&
+            untouched(context, opened) && untouched(context, current) &&
+            opened.documentRuntimeId === context.documentRuntimeId && current.documentRuntimeId === context.documentRuntimeId) {
+          // Desktop may resolve an already-known native target to the current
+          // Work page. No Back is needed, and Back would leave the user's chat.
+          phase('original-page-preserved');
+        } else if (now() >= openedAt && now() - openedAt <= 45000 && expectedOpenedTitle && expectedCurrentTitle &&
+            untouched({ ...context, title: opened.title }, opened) &&
+            untouched({ ...context, title: current.title }, current) && current.documentRuntimeId === opened.documentRuntimeId) {
           // Exactly one return dispatch, and only without any keyboard/mouse
           // activity since the shortcut. Unknown results are never retried.
           // The normal Desktop navigation pushed one entry. Use its actual

@@ -45,7 +45,7 @@ const itemFields = {
   dynamicToolCall: ['type', 'id', 'namespace', 'tool', 'arguments', 'status', 'contentItems', 'success', 'durationMs'],
   webSearch: ['type', 'id', 'query', 'action', 'results'],
   subAgentActivity: ['type', 'id', 'agentPath', 'agentThreadId', 'kind', 'model', 'reasoningEffort'],
-  collabAgentToolCall: ['type', 'id', 'tool', 'status', 'senderThreadId', 'receiverThreadIds', 'prompt', 'model', 'reasoningEffort', 'agentsStates'],
+  collabAgentToolCall: ['type', 'id', 'tool', 'status', 'senderThreadId', 'receiverThreadIds', 'prompt', 'model', 'reasoningEffort', 'agentsStates', 'receiverThreads'],
 };
 const passthroughEvents = new Set(['thread/status/changed', 'thread/name/updated', 'thread/tokenUsage/updated',
   'item/agentMessage/delta', 'item/commandExecution/outputDelta', 'item/reasoning/textDelta',
@@ -70,6 +70,19 @@ function checkItem(item, turnId) {
   const fields = object(item) && Object.hasOwn(itemFields, item.type) ? itemFields[item.type] : null;
   if (!fields || !validId(item.id) || Object.keys(item).some(key => !fields.includes(key))) {
     fail('This cloud history item is outside the supported read-only display contract.');
+  }
+  if (item.type === 'collabAgentToolCall' && Object.hasOwn(item, 'receiverThreads')) {
+    // Desktop adds a cache of loaded child threads to the official wire item.
+    // Keep the actual collaboration record and IDs; do not expose that cache
+    // (which may include another chat's history) to the CLI.
+    if (!Array.isArray(item.receiverThreads) || !Array.isArray(item.receiverThreadIds) ||
+        item.receiverThreads.some(entry => !onlyFields(entry, ['threadId', 'thread']) ||
+          !item.receiverThreadIds.includes(entry.threadId) ||
+          entry.thread !== null && (!object(entry.thread) || entry.thread.id !== entry.threadId)) ||
+        new Set(item.receiverThreads.map(entry => entry.threadId)).size !== item.receiverThreads.length) {
+      fail('The Desktop child-thread display cache is malformed.');
+    }
+    delete item.receiverThreads;
   }
   if (item.type === 'userMessage' && (!Array.isArray(item.content) || item.content.some(value =>
     !object(value) || value.type !== 'text' || typeof value.text !== 'string' ||

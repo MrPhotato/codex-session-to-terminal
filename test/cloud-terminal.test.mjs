@@ -13,7 +13,7 @@ function fixture(extra={}) {
   const attachment={endpoint:'ws://127.0.0.1:33333/',token:'a'.repeat(64),state:{id,hostId:'durable',latestThreadSettings:{cwd:'/cloud/not-a-local-directory'}},manifest:{readonly:true,hostId:'durable',send:false,steer:false,queue:false,interrupt:false},close:async()=>calls.push('attachment.close')};
   const reader={listConversations:async()=>({threads:[{id,kind:'codex',hostId:'durable',title:'Online'}]}),readConversation:async(target,args)=>{calls.push({read:target,args});return {thread:{id:target,kind:'codex',hostId:'durable'},turns:[]};},close:async()=>calls.push('reader.close')};
   const dependencies={lease:()=>true,createHome:async()=>home,createReader:async()=>reader,writeDiagnostics:async()=>{},loadIdentityLinks:async()=>[],
-    chooseThread:async rows=>{calls.push({candidates:rows});return rows[0].id;},
+    chooseThread:async rows=>{calls.push({candidates:rows});return rows.find(row=>row.hostId==='durable').id;},
     createAttachment:async args=>{calls.push({attachment:args});return attachment;},
     createPresence:()=>({updateState(){},updateStatus(){},close:async()=>calls.push('presence.close')}),
     runView:async(launch,args)=>{calls.push({launch,viewArgs:args});return 0;},processEvents:new EventEmitter(),output:{write(){}},input:{},
@@ -316,4 +316,33 @@ test('diagnostics preserve missing-context and list failure as separate outcomes
   await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext},f.dependencies),/list failed/);
   assert.equal(snapshots.length,1);assert.equal(snapshots[0].failedStage,'listConversations');
   assert.equal(snapshots[0].outcome,'selection-failed');
+});
+
+test('discovered untitled chat verifies native IDs before showing a frontend display title', async()=>{
+  const f=linkedFixture(); f.dependencies.loadIdentityLinks=async()=>[];
+  f.dependencies.discoverCandidate=async()=>({native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'});
+  f.dependencies.attachWithRecovery=async args=>{assert.equal(args.plan.linkedEvidence.discovered,true);return args.connect();};
+  f.dependencies.runView=async(_launch,args)=>{assert.equal(args.displayTitle,'Online');return 0;};
+  assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
+  f.attachment.state.turnHistory.history.entitiesByKey.latest.items[0].clientId=laterMessageId;
+  f.dependencies.runView=()=>assert.fail('mismatched discovered history must not display');
+  await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),{code:'CLOUD_IDENTITY_UNCONFIRMED'});
+});
+
+test('missing title offers frontend names and manual frontend choice uses the same ID verification',async()=>{
+  const f=linkedFixture(); f.dependencies.loadIdentityLinks=async()=>[];
+  f.dependencies.chooseThread=async rows=>{assert.equal(rows[0].title,'Online');assert.equal(rows[0].kind,'chatgpt');return frontendId;};
+  f.dependencies.discoverCandidate=async()=>({native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'});
+  f.dependencies.attachWithRecovery=async args=>{assert.equal(args.plan,undefined);return args.connect();};
+  assert.equal(await runCloudTerminal({...options,threadId:undefined},f.dependencies),0);
+});
+
+test('a local chat sharing the frontend title cannot trigger automatic cloud discovery', async()=>{
+  const f=linkedFixture(); f.dependencies.loadIdentityLinks=async()=>[];
+  const list=await f.reader.listConversations();
+  f.reader.listConversations=async()=>({...list,threads:[...list.threads,{id:laterMessageId,kind:'codex',hostId:'local',title:'Online'}]});
+  f.dependencies.discoverCandidate=()=>assert.fail('must not infer cloud from an ambiguous page title');
+  let choices=0; f.dependencies.chooseThread=async()=>{choices++;return id;};
+  assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
+  assert.equal(choices,1);
 });

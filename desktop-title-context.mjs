@@ -23,7 +23,7 @@ async function readSnapshot(context, { signal, executeFn = execute, now = Date.n
   if (signal?.aborted) return { reason: 'aborted' };
   try {
     const result = await executeFn(helper, ['--pid', String(context.pid), '--window', String(context.window), '--started', context.started],
-      { windowsHide: true, shell: false, timeout: 1500, maxBuffer: 8192, encoding: 'utf8', signal });
+      { windowsHide: true, shell: false, timeout: 4000, maxBuffer: 8192, encoding: 'utf8', signal });
     if (signal?.aborted) return { reason: 'aborted' };
     const actual = JSON.parse(result.stdout);
     if (!validDesktopTitleContext(actual)) return { reason: 'unavailable' };

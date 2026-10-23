@@ -254,6 +254,28 @@ function displayItems() {
   ];
 }
 
+test('Desktop child-thread caches are omitted without losing collaboration history or mutating the snapshot', async () => {
+  const source = await resumeFixture(), p = projection(), collab = displayItems().at(-1);
+  for (const receiverThreads of [[], [{ threadId: otherThreadId, thread: null }],
+    [{ threadId: otherThreadId, thread: { id: otherThreadId, title: 'Child', turns: [{ privateCache: true }] } }]]) {
+    const item = { ...collab, receiverThreads }, thread = structuredClone(source.thread);
+    thread.turns[0].items.push(item);
+    const original = structuredClone(thread);
+    assert.deepEqual(p.projectResponse('thread/read', { thread }).thread.turns[0].items.at(-1), collab);
+    assert.deepEqual(p.projectResponse('thread/items/list', { data: [{ turnId: 'native-turn', item }], nextCursor: null }).data[0].item, collab);
+    assert.deepEqual(p.projectNotification({ method: 'item/completed', params: { threadId, turnId: 'native-turn', item, completedAtMs: 1792490895000 } }).params.item, collab);
+    assert.deepEqual(thread, original);
+  }
+  for (const receiverThreads of [null, {}, [{ threadId, thread: null }],
+    [{ threadId: otherThreadId, thread: { id: threadId } }], [{ threadId: otherThreadId }],
+    [{ threadId: otherThreadId, thread: null, unknown: true }],
+    [{ threadId: otherThreadId, thread: null }, { threadId: otherThreadId, thread: null }]]) {
+    const thread = structuredClone(source.thread);
+    thread.turns[0].items.push({ ...collab, receiverThreads });
+    assert.throws(() => p.projectResponse('thread/read', { thread }), { code: 'UNSUPPORTED_CLOUD_PROJECTION' });
+  }
+});
+
 test('known text tool displays survive full history, pages and live items without mutation or execution', async () => {
   const p = projection(), source = await resumeFixture(), items = displayItems();
   source.thread.turns[0].items.push(...items);

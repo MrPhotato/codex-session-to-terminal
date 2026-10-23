@@ -20,8 +20,8 @@ foreach ($text in @('{', $valid.Replace('"ready"','"unavailable"'), $valid.Repla
     if ((Receive-CstTitleProbe $fixture.Probe).Context -or !$fixture.Process.Disposed) { throw 'Invalid observation was accepted or child retained.' }
 }
 $fixture=New-ProbeFixture $valid $false
-if ($null -ne (Receive-CstTitleProbe $fixture.Probe -Now $fixture.Probe.At.AddMilliseconds(1499))) { throw 'Pending UIA read blocked or completed prematurely.' }
-if ((Receive-CstTitleProbe $fixture.Probe -Now $fixture.Probe.At.AddMilliseconds(1500)).Context -or !$fixture.Process.Killed -or !$fixture.Process.Disposed) { throw 'Timeout did not stop only the owned helper and fall back.' }
+if ($null -ne (Receive-CstTitleProbe $fixture.Probe -Now $fixture.Probe.At.AddMilliseconds(3999))) { throw 'Pending UIA read blocked or completed prematurely.' }
+if ((Receive-CstTitleProbe $fixture.Probe -Now $fixture.Probe.At.AddMilliseconds(4000)).Context -or !$fixture.Process.Killed -or !$fixture.Process.Disposed) { throw 'Timeout did not stop only the owned helper and fall back.' }
 $args=@(Get-CstCloudTerminalArguments -ControlDirectory $PSScriptRoot -PowerShellPath 'C:\pwsh.exe' -BackendPath 'C:\codex.exe' -TitleContext $result.Context)
 if ($args.Count -ne 9 -or $args[7] -cne '--title-context' -or $args[8] -cne $result.Context) { throw 'Title context was not a separate literal argument.' }
 'Title probe: exact context, invalid data, bounded polling, owned-child cleanup and literal arguments passed; no UI accessed.'

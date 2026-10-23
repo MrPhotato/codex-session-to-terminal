@@ -202,9 +202,7 @@ namespace CstDesktopContext.Tests
             }
             foreach (Func<int, uint?> tick in new Func<int, uint?>[] {
                 delegate { return null; },
-                delegate(int call) { return call == 1 ? (uint?)1234u : null; },
-                delegate(int call) { return call == 1 ? 1234u : 1235u; },
-                delegate(int call) { return call == 1 ? UInt32.MaxValue : 0u; }
+                delegate(int call) { return call == 1 ? (uint?)1234u : null; }
             }) {
                 var ops = new FixtureOps { InputTick = tick };
                 ContextResult result = ContextReader.Read(Request(), ops);
@@ -212,6 +210,9 @@ namespace CstDesktopContext.Tests
                 Check(result.Title == "" && result.DocumentRuntimeId == "", "unstable input leaked page context");
                 Check(result.ToJson().Contains("\"lastInputTick\":null"), "unknown input epoch was invented");
             }
+            var moving = new FixtureOps { InputTick = delegate(int call) { return call == 1 ? 1234u : 1235u; } };
+            ContextResult observed = ContextReader.Read(Request(), moving);
+            Check(observed.Status == "ready" && observed.LastInputTick == 1235u, "incidental input blocked a stable page read");
         }
 
         public static string[] BackArguments()

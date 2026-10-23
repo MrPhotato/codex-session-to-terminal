@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCloudIdentityLinks, findLinkedCloudCandidate, frontendMessageEvidence,
-  matchesCloudMessageEvidence } from '../cloud-identity-links.mjs';
+  matchesCloudMessageEvidence, discoverCloudCandidate, cloudFrontends } from '../cloud-identity-links.mjs';
 
 const frontendId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const nativeId = '11111111-2222-4333-8444-555555555555';
@@ -135,4 +135,83 @@ test('an older matching client ID cannot validate a newer divergent turn or fork
   state.turnHistory.history.entitiesByKey.next = next;
   state.turnHistory.history.islands[0].entries.push({ value: 'next' });
   assert.equal(matchesCloudMessageEvidence(state, nativeId, evidence()), false);
+});
+
+function discoveryFixture() {
+  const earlier = 'Earlier question about a specific deployment';
+  const current = 'Current detailed question about memory offloading';
+  const source = frontendRead();
+  source.turns[0].items[0].content = [{ type: 'text', text: current }];
+  source.turns.push({ items: [{ type: 'userMessage', id: otherId, content: [{ type: 'text', text: earlier }] }] });
+  const target = { thread: native(), page: { order: 'newest_first' }, turns: [{ items: [
+    { type: 'userMessage', content: [{ type: 'text', text: earlier }] },
+    { type: 'agentMessage', text: 'answer' },
+    { type: 'userMessage', content: [{ type: 'text', text: current }] },
+  ] }] };
+  const calls = [];
+  return { source, target, calls, read: async (key) => { calls.push(key); return key === frontendId ? source : target; } };
+}
+
+test('discovers an untitled candidate using full ordered text, then checks fresh frontend identity', async () => {
+  const f = discoveryFixture();
+  const result = await discoverCloudCandidate(directory(), frontend(), f.read);
+  assert.equal(result.native.thread.id, nativeId);
+  assert.deepEqual(result.evidence, { ...evidence(), discovered: true });
+  assert.deepEqual(f.calls, [frontendId, nativeId, frontendId]);
+  assert.deepEqual(cloudFrontends(directory()), [{ id: frontendId, kind: 'chatgpt', title: rawTitle }]);
+});
+
+test('discovery rejects duplicates, failed reads, truncated messages and stale frontend evidence', async () => {
+  for (const mode of ['duplicate','failed','truncated','changed','reverse']) {
+    const f = discoveryFixture(); let reads = 0;
+    const rows = directory(mode === 'duplicate' ? [native({ id: otherId })] : []);
+    const read = async key => {
+      if (mode === 'failed' && key === nativeId) throw Error('unavailable');
+      const value = structuredClone(key === frontendId ? f.source : { ...f.target, thread: native({ id: key }) });
+      if (mode === 'truncated' && key === nativeId) value.turns[0].items[2].truncated = true;
+      if (mode === 'reverse' && key === nativeId) value.turns[0].items.reverse();
+      if (key === frontendId && ++reads === 2 && mode === 'changed') value.turns[0].items[0].id = otherId;
+      return value;
+    };
+    assert.equal(await discoverCloudCandidate(rows, frontend(), read), null, mode);
+  }
+});
+
+test('discovery is bounded and a late read cannot start scanning further chats', async () => {
+  const f = discoveryFixture(); let resolveRead, calls = 0;
+  assert.equal(await discoverCloudCandidate(directory(), frontend(), () => { calls++; return new Promise(r => { resolveRead = r; }); }, { timeoutMs: 10 }), null);
+  resolveRead(f.source);
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(calls, 1);
+});
+
+test('discovered candidate still requires exact latest admitted client ID including in-turn user continuation', () => {
+  const s = nativeState();
+  latestTurn(s).items.push({ type: 'userMessage', clientId: otherId });
+  const ev = { frontendId, clientMessageId: otherId, discovered: true };
+  assert.equal(matchesCloudMessageEvidence(s, nativeId, ev), true);
+  assert.equal(matchesCloudMessageEvidence(s, nativeId, { ...ev, clientMessageId }), false);
+  latestTurn(s).params.clientUserMessageId = otherId;
+  assert.equal(matchesCloudMessageEvidence(s, nativeId, ev), false);
+});
+
+test('a live canonical cloud turn verifies its frontend receipt before paginated history exists', () => {
+  const make = () => {
+    const s = nativeState(); s.historyMode = 'legacy'; s.threadRuntimeStatus = { type: 'active' };
+    const t = latestTurn(s); t.status = 'inProgress'; t.turnStartedAtMs = 1792736659826; t.params = {}; delete t.itemsPagination;
+    return s;
+  };
+  const ev = { ...evidence(), discovered: true };
+  assert.equal(matchesCloudMessageEvidence(make(), nativeId, ev), true);
+  const completed = make(); completed.threadRuntimeStatus.type = 'idle'; latestTurn(completed).status = 'completed';
+  assert.equal(matchesCloudMessageEvidence(completed, nativeId, ev), true);
+  for (const change of [s => s.threadRuntimeStatus.type = 'idle', s => latestTurn(s).status = 'completed',
+    s => latestTurn(s).turnId = 'optimistic', s => latestTurn(s).params = null, s => delete latestTurn(s).turnStartedAtMs,
+    s => latestTurn(s).params.clientUserMessageId = otherId,
+    s => latestTurn(s).items[0].clientId = otherId,
+    s => latestTurn(s).itemsPagination = { hasLoadedOldest: false },
+    s => s.turns.push({ turnId: clientMessageId, items: [] })]) {
+    const s = make(); change(s); assert.equal(matchesCloudMessageEvidence(s, nativeId, ev), false);
+  }
+  assert.equal(matchesCloudMessageEvidence(make(), nativeId, evidence()), false);
 });

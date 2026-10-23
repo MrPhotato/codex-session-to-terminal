@@ -97,11 +97,103 @@ export function matchesCloudMessageEvidence(state, nativeId, evidence) {
   try { latest = orderedDesktopTurns(state).at(-1); } catch { return false; }
   // Do not accept an older matching message, a disconnected history island, or
   // an optimistic turn appended after the authoritative current boundary.
-  if (!latest || latest !== canonicalLatest || !Array.isArray(latest.items) ||
-      latest.itemsPagination?.hasLoadedOldest !== true || latest.itemsPagination.evicted === true ||
-      latest.itemsPagination.reconnect != null) return false;
+  if (!latest || latest !== canonicalLatest || !Array.isArray(latest.items)) return false;
+  const liveTurn = evidence.discovered === true && state.historyMode === 'legacy' &&
+    (latest.status === 'inProgress' && state.threadRuntimeStatus?.type === 'active' ||
+      latest.status === 'completed' && state.threadRuntimeStatus?.type === 'idle') &&
+    Number.isSafeInteger(latest.turnStartedAtMs) && latest.turnStartedAtMs > 0 &&
+    id(latest.turnId) && object(latest.params) && latest.itemsPagination == null;
+  if (!liveTurn && (latest.itemsPagination?.hasLoadedOldest !== true || latest.itemsPagination.evicted === true ||
+      latest.itemsPagination.reconnect != null)) return false;
   const users = latest.items.filter(item => item?.type === 'userMessage');
+  if (evidence.discovered === true) {
+    // Continued user input can be admitted into the same native turn. Check
+    // the last admitted user ID, while preserving the first-input invariant.
+    const ids = users.map(item => id(item.clientId));
+    // A live cloud turn has a canonical server turn ID but no paginated-history
+    // fields yet. Its admitted user ID must still match a fresh frontend read;
+    // a supplied conflicting root ID is never ignored.
+    const rootId = latest.params?.clientUserMessageId;
+    return users.length > 0 && latest.items[0] === users[0] && ids.every(Boolean) &&
+      new Set(ids).size === ids.length && (id(rootId) === ids[0] || liveTurn && rootId == null) &&
+      ids.at(-1) === clientMessageId &&
+      !latest.items.some(item => item?.type === 'steeringUserMessage' && item.status === 'accepted');
+  }
   if (users.length !== 1 || latest.items[0] !== users[0] ||
       latest.items.some(item => item?.type === 'steeringUserMessage' && item.status === 'accepted')) return false;
   return id(users[0].clientId) === clientMessageId && id(latest.params?.clientUserMessageId) === clientMessageId;
+}
+
+export function cloudFrontends(list) {
+  const records = new Map();
+  for (const row of [...(list?.pinnedThreads ?? []), ...(list?.threads ?? [])]) {
+    if (row?.kind !== 'chatgpt' || !id(row.id) || !title(row.title)) continue;
+    const rowId = id(row.id);
+    const prior = records.get(rowId);
+    if (prior && prior.title !== row.title) return [];
+    records.set(rowId, { id: rowId, title: row.title, kind: 'chatgpt' });
+  }
+  return [...records.values()];
+}
+
+function userTail(read) {
+  if (read?.page?.order !== 'newest_first' || !Array.isArray(read.turns)) return [];
+  const users = read.turns.slice().reverse().flatMap(turn => turn.items ?? []).filter(item => item.type === 'userMessage');
+  return users.slice(-2).map(item => {
+    if (item.truncated || item.textTruncated || !Array.isArray(item.content) || item.content.length !== 1) return null;
+    const part = item.content[0];
+    return part.type === 'text' && typeof part.text === 'string' && part.text.length > 0 &&
+      part.text.length < 4096 && !part.truncated ? part.text : null;
+  });
+}
+
+// Text is used only to nominate a candidate for read-only ID verification.
+// Never persist this suggestion or display its history before the native
+// snapshot confirms the latest frontend client message ID. Scan every listed
+// candidate; a failed read or a duplicate leaves the association unresolved.
+export async function discoverCloudCandidate(list, frontend, read, { signal, timeoutMs = 18000 } = {}) {
+  const controller = new AbortController();
+  const cancelled = () => controller.abort();
+  signal?.addEventListener('abort', cancelled, { once: true });
+  let timer;
+  const stopped = new Promise((_, reject) => {
+    const abort = () => reject(Object.assign(new Error('CLOUD_IDENTITY_UNCONFIRMED'), { code: 'CLOUD_IDENTITY_UNCONFIRMED' }));
+    controller.signal.addEventListener('abort', abort, { once: true });
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (signal?.aborted) controller.abort();
+  });
+  const operation = async () => {
+    const source = await read(frontend.id, { turnLimit: 4, maxOutputCharsPerItem: 4096 });
+    const evidence = frontendMessageEvidence(source, frontend.id, frontend.title);
+    const tail = userTail(source);
+    if (!evidence || tail.length !== 2 || tail.some(value => !value) || tail.join('').length < 24) return null;
+    const natives = new Map();
+    for (const row of [...(list.pinnedThreads ?? []), ...(list.threads ?? [])]) {
+      if (row?.kind !== 'codex' || row.hostId !== 'durable' || !id(row.id)) continue;
+      natives.set(row.id, row);
+    }
+    if (natives.size > 64) return null;
+    const rows = [...natives.values()], matches = [];
+    let next = 0, invalid = false;
+    const scan = async () => {
+     while (next < rows.length && !controller.signal.aborted && !invalid) {
+      const row = rows[next++];
+      const native = await read(row.id, { hostId: 'durable', turnLimit: 4, maxOutputCharsPerItem: 4096 });
+      if (native.thread?.id !== row.id || native.thread.kind !== 'codex' || native.thread.hostId !== 'durable') { invalid = true; return; }
+      const other = userTail(native);
+      if (other.length === 2 && tail.every((value, index) => value === other[index])) {
+        matches.push({ native, evidence: { ...evidence, discovered: true }, title: frontend.title });
+      }
+     }
+    };
+    // Share one official reader process; limit outstanding read-only RPCs.
+    await Promise.all(Array.from({ length: Math.min(3, rows.length) }, scan));
+    if (invalid || matches.length !== 1 || controller.signal.aborted) return null;
+    const match = matches[0];
+    const fresh = await read(frontend.id, { turnLimit: 1, maxOutputCharsPerItem: 1 });
+    return frontendMessageEvidence(fresh, frontend.id, frontend.title)?.clientMessageId === evidence.clientMessageId ? match : null;
+  };
+  try { return await Promise.race([operation(), stopped]); }
+  catch { return null; }
+  finally { controller.abort(); clearTimeout(timer); signal?.removeEventListener('abort', cancelled); }
 }
