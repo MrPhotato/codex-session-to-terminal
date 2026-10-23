@@ -67,6 +67,61 @@ try {
     $args = @(Get-CstTerminalArguments -ThreadId '12345678-1234-4234-9234-123456789abc' -ControlDirectory $second -PowerShellPath 'C:\a b\pwsh.exe' -BackendPath 'C:\official package\codex.exe')
     if ($args.Count -ne 9 -or $args[2] -cne '12345678-1234-4234-9234-123456789abc' -or $args[4] -ne $second -or $args[6] -ne 'C:\a b\pwsh.exe' -or $args[8] -ne 'C:\official package\codex.exe') { throw 'Terminal arguments were not preserved as separate values.' }
     if ([IO.Path]::GetFileName($args[0]) -cne 'cst-native-terminal.mjs') { throw 'Independent must launch the official CLI wrapper.' }
+    $durableArgs = @(Get-CstTerminalArguments -ThreadId '12345678-1234-4234-9234-123456789abc' -HostId durable -ControlDirectory $second -PowerShellPath 'C:\a b\pwsh.exe' -BackendPath 'C:\official package\codex.exe')
+    if ($durableArgs.Count -ne 9 -or [IO.Path]::GetFileName($durableArgs[0]) -cne 'cst-cloud-terminal.mjs' -or
+        $durableArgs[1] -cne '--thread' -or $durableArgs[2] -cne '12345678-1234-4234-9234-123456789abc' -or
+        ($durableArgs[3..8] -join '|') -cne ($args[3..8] -join '|')) { throw 'Native durable link was not routed to the exact read-only cloud session.' }
+    $captured = [DateTime]::UtcNow
+    $pending = @{ At=$captured; SourceWindow=123L; DesktopPid=456; DesktopStartTicks=789L }
+    $fallbackState = @{ ShortcutPending=$pending }
+    $fallbackParameters = @{ State=$fallbackState; SourceWindow=123L; ForegroundPid=456; DesktopPid=456; DesktopStartTicks=789L }
+    if ($null -ne (Receive-CstShortcutFallback @fallbackParameters -Now $captured.AddMilliseconds(899))) { throw 'Cloud fallback ran before allowing Desktop to copy its link.' }
+    if (!$fallbackState.ShortcutPending) { throw 'Early poll discarded the pending shortcut.' }
+    if ($null -eq (Receive-CstShortcutFallback @fallbackParameters -Now $captured.AddMilliseconds(900)) -or $fallbackState.ShortcutPending) { throw 'Cloud fallback did not consume exactly one request.' }
+    if ($null -ne (Receive-CstShortcutFallback @fallbackParameters -Now $captured.AddMilliseconds(950))) { throw 'Consumed shortcut was replayed.' }
+    foreach ($change in @(@{SourceWindow=124L}, @{ForegroundPid=457}, @{DesktopPid=457}, @{DesktopStartTicks=790L}, @{Now=$captured.AddMilliseconds(-1)}, @{Now=$captured.AddSeconds(4)})) {
+        $fallbackState.ShortcutPending = $pending
+        $parameters = $fallbackParameters.Clone(); $parameters.Now=$captured.AddSeconds(1)
+        foreach ($key in $change.Keys) { $parameters[$key]=$change[$key] }
+        if ($null -ne (Receive-CstShortcutFallback @parameters) -or $fallbackState.ShortcutPending) { throw 'Changed focus, process generation or stale clock did not cancel fallback.' }
+    }
+    # The clipboard callback clears this pending request even for a deduplicated
+    # valid link, so a successful local/durable action never opens a picker too.
+    $fallbackState.ShortcutPending = $null
+    if ($null -ne (Receive-CstShortcutFallback @fallbackParameters -Now $captured.AddSeconds(1))) { throw 'Handled native link still opened cloud selection.' }
+    $cloudArgs = @(Get-CstCloudTerminalArguments -ControlDirectory $second -PowerShellPath 'C:\a b\pwsh.exe' -BackendPath "C:\official package's;literal\codex.exe")
+    if ($cloudArgs.Count -ne 7 -or [IO.Path]::GetFileName($cloudArgs[0]) -cne 'cst-cloud-terminal.mjs' -or
+        $cloudArgs[1] -cne '--control-directory' -or $cloudArgs[2] -cne $second -or
+        $cloudArgs[3] -cne '--powershell-path' -or $cloudArgs[4] -cne 'C:\a b\pwsh.exe' -or
+        $cloudArgs[5] -cne '--backend-path' -or $cloudArgs[6] -cne "C:\official package's;literal\codex.exe") { throw 'Cloud selection arguments were not preserved as separate literal values.' }
+    # A user menu click opens its own cloud picker without requiring Desktop to
+    # be foreground. Replace only the spawn boundary; do not read focus, launch
+    # a terminal, or operate any existing window during this test.
+    $originalTerminalWindow = (Get-Command Start-CstTerminalWindow -CommandType Function).ScriptBlock
+    $script:cloudTerminalInvocation = $null
+    try {
+        function Start-CstTerminalWindow {
+            param([string[]]$NodeArguments, [string]$ControlDirectory, [string]$NodeExecutable,
+                [string]$PowerShellPath, [long]$SourceWindow = 0, [switch]$ExplicitMenuLaunch)
+            $script:cloudTerminalInvocation = [pscustomobject]@{
+                NodeArguments = $NodeArguments; ControlDirectory = $ControlDirectory
+                NodeExecutable = $NodeExecutable; PowerShellPath = $PowerShellPath
+                ExplicitMenuLaunch = [bool]$ExplicitMenuLaunch
+            }
+        }
+        Invoke-CstCloudTerminal -ControlDirectory $second -NodeExecutable "C:\node's;literal\node.exe" -BackendPath 'C:\official package\codex.exe'
+        $invocation = $script:cloudTerminalInvocation
+        if (!$invocation -or !$invocation.ExplicitMenuLaunch -or $invocation.ControlDirectory -cne $second -or
+            $invocation.NodeExecutable -cne "C:\node's;literal\node.exe" -or
+            $invocation.PowerShellPath -cne (Join-Path $PSHOME 'pwsh.exe') -or
+            $invocation.NodeArguments.Count -ne 7 -or $invocation.NodeArguments[6] -cne 'C:\official package\codex.exe') { throw 'Cloud menu launch did not use the explicit literal terminal route.' }
+    } finally {
+        Set-Item -LiteralPath Function:\Start-CstTerminalWindow -Value $originalTerminalWindow
+        Remove-Variable -Name cloudTerminalInvocation -Scope Script -ErrorAction SilentlyContinue
+    }
+    $localTerminalSource = (Get-Command Invoke-CstTerminal -CommandType Function).ScriptBlock.ToString()
+    if (!$localTerminalSource.Contains('[CodexSharedSession.ClipboardLinkListener]::ForegroundProcessId() -ne $DesktopPid') -or
+        $localTerminalSource.Contains('-ExplicitMenuLaunch')) { throw 'The local clipboard route must retain its Desktop foreground gate.' }
     # Malformed reusable code must fail closed without evaluating expressions.
     $fixture = Join-Path $testRoot 'bad-listener.ps1'
     [IO.File]::WriteAllText($fixture, '$nativeSource = (throw "must not execute")')
@@ -169,4 +224,4 @@ try {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 }
-'Independent CST tray: native source, process selection, per-run shutdown, literal arguments and two-process startup/reactivation passed; no UI launched.'
+'Codex Session to Terminal tray: native source, process selection, per-run shutdown, literal local/cloud arguments, explicit cloud launch and two-process startup/reactivation passed; no UI launched.'

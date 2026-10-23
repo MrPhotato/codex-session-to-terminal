@@ -33,6 +33,7 @@ $rejected = @(
     ($localLink + '/extra')
     ($localLink + '/')
     ($localLink + '?hostId=remote')
+    ($localLink + '?hostId=durable')
     ($localLink + '?hostId=LOCAL')
     ($localLink + '?hostId=%6cocal')
     ($localLink + '?hostId=local&hostId=remote')
@@ -65,3 +66,49 @@ foreach ($testInput in $rejected) {
 }
 
 'Thread link parser: {0} accepted cases and {1} rejected cases passed.' -f $accepted.Count, $rejected.Count
+
+$nativeAccepted = @(
+    @{ Text = $localLink; HostId = 'local' }
+    @{ Text = ('codex://threads/' + $testThreadId.ToUpperInvariant()); HostId = 'local' }
+    @{ Text = ($localLink + '?hostId=local'); HostId = 'local' }
+    @{ Text = ($localLink + '?hostId=durable'); HostId = 'durable' }
+    @{ Text = ('codex://threads/' + $testThreadId.ToUpperInvariant() + '?hostId=durable'); HostId = 'durable' }
+)
+foreach ($testCase in $nativeAccepted) {
+    $parsed = ConvertFrom-CodexThreadLink -Text $testCase.Text
+    if ($parsed -isnot [pscustomobject] -or $parsed.ThreadId -isnot [Guid] -or
+        $parsed.ThreadId.ToString('D') -cne $testThreadId -or $parsed.HostId -cne $testCase.HostId -or
+        @($parsed.PSObject.Properties).Count -ne 2) {
+        throw 'A supported native thread link did not preserve its exact thread and host identity.'
+    }
+}
+
+$nativeRejected = @($rejected | Where-Object { $_ -isnot [string] -or $_ -cne ($localLink + '?hostId=durable') }) + @(
+    ($localLink + '?hostId=DURABLE')
+    ($localLink + '?hostId=%64urable')
+    ($localLink + '?hostId=durable&hostId=local')
+    ($localLink + '?hostId=local&hostId=durable')
+    ($localLink + '?hostId=durable&view=review')
+    ($localLink + '?hostId=durable&threadAccess=shared')
+    ($localLink + '?hostId=durable#fragment')
+    ($localLink + '?hostId=durable ')
+    ($localLink + '?hostId=durable' + "`n")
+    ($localLink + '?hostId=durable' + [char]0)
+    ('https://chatgpt.com/c/' + $testThreadId)
+    'codex://threads/00000000-0000-0000-0000-000000000000'
+    'codex://threads/00000000-0000-0000-0000-000000000000?hostId=local'
+    'codex://threads/00000000-0000-0000-0000-000000000000?hostId=durable'
+)
+foreach ($testInput in $nativeRejected) {
+    if ($null -ne (ConvertFrom-CodexThreadLink -Text $testInput)) {
+        throw 'Unsupported input was accepted as a native thread link.'
+    }
+}
+
+# Keep the old shared-launcher parser's return type and acceptance unchanged.
+if ((ConvertFrom-CodexLocalThreadLink -Text 'codex://threads/00000000-0000-0000-0000-000000000000') -ne [Guid]::Empty -or
+    $null -ne (ConvertFrom-CodexLocalThreadLink -Text ($localLink + '?hostId=durable'))) {
+    throw 'The legacy local parser changed its compatibility behavior.'
+}
+
+'Native thread link parser: {0} accepted cases and {1} rejected cases passed; legacy local-only behavior preserved.' -f $nativeAccepted.Count, $nativeRejected.Count

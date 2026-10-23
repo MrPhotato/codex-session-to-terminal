@@ -16,7 +16,9 @@ try {
     if ($menu -isnot [Windows.Forms.ContextMenuStrip]) { throw 'The tray menu must remain a native ContextMenuStrip.' }
     if ($menu.AccessibleName -ne 'Codex Session to Terminal') { throw 'The full product name must be exposed.' }
     $actions = @($menu.Items | Where-Object { $_ -is [Windows.Forms.ToolStripMenuItem] })
-    if ($actions.Count -ne 2) { throw 'The menu must expose the session and exit actions.' }
+    if ($actions.Count -ne 3) { throw 'The menu must expose local sessions, read-only cloud sessions, and exit.' }
+    if ($menu.CloudSessionsItem.Enabled) { throw 'Cloud selection must be disabled until Desktop is ready.' }
+    $menu.UpdateAppearance($false, $false, $true)
     foreach ($item in $actions) {
         if (!$item.CanSelect -or !$item.Enabled) { throw 'Native menu actions must retain selection and keyboard navigation.' }
     }
@@ -29,12 +31,21 @@ try {
                 $menu.UpdateAppearance($dark, $chinese, $ready)
                 $expectedStatus = if ($ready) { if ($chinese) { '已就绪' } else { 'Ready' } } else { if ($chinese) { '等待' } else { 'Waiting' } }
                 if ($menu.AccessibleDescription -notmatch $expectedStatus) { throw 'Desktop readiness was not reflected truthfully.' }
+                $expectedCloudLabel = if ($chinese) { '打开云端只读会话' } else { 'Open online read-only session' }
+                if ($menu.CloudSessionsItem.Text -cne $expectedCloudLabel -or
+                    $menu.CloudSessionsItem.AccessibleName -cne $expectedCloudLabel -or
+                    $menu.CloudSessionsItem.Enabled -ne $ready) { throw 'The cloud action must be localized, accessible, and enabled only when Desktop is ready.' }
                 if (($menu.Items | Where-Object { $_.Text -match '(^|\W)CST(\W|$)' }).Count) { throw 'The menu must not use the product abbreviation.' }
                 $heading = @($menu.Items | Where-Object { $_.Tag -eq 'heading' })[0]
                 if ($heading.Text -ne 'Codex Session to Terminal') { throw 'The menu must retain the unabbreviated brand.' }
                 $measured = [Windows.Forms.TextRenderer]::MeasureText($heading.Text, $heading.Font, [Drawing.Size]::Empty,
                     [Windows.Forms.TextFormatFlags]'NoPadding,SingleLine')
                 if ($measured.Width -gt ($heading.Width - $heading.Padding.Horizontal)) { throw 'The brand does not fit in the menu.' }
+                $cloudMeasured = [Windows.Forms.TextRenderer]::MeasureText($menu.CloudSessionsItem.Text, $menu.CloudSessionsItem.Font, [Drawing.Size]::Empty,
+                    [Windows.Forms.TextFormatFlags]'NoPadding,SingleLine')
+                $actionScale = $menu.CloudSessionsItem.Font.Size / 13
+                $actionTextWidth = $menu.CloudSessionsItem.Width - [Math]::Round(38 * $actionScale) - [Math]::Round(9 * $actionScale)
+                if ($cloudMeasured.Width -gt $actionTextWidth) { throw 'The cloud action label does not fit in the compact menu.' }
                 foreach ($dpiScale in @(1.0, 1.25, 1.5, 2.0)) {
                     $bitmap = $menu.RenderPreview([single]$dpiScale)
                     try {
@@ -68,6 +79,16 @@ try {
     $menu.SessionsItem.PerformClick()
     $menu.SessionsItem.remove_Click($handler)
     if ($script:menuActionClicks -ne 1) { throw 'The public native menu action cannot be bound.' }
+    $script:cloudActionClicks = 0
+    $cloudHandler = { $script:cloudActionClicks++ }
+    $menu.CloudSessionsItem.add_Click($cloudHandler)
+    $menu.UpdateAppearance($true, $true, $false)
+    $menu.CloudSessionsItem.PerformClick()
+    if ($script:cloudActionClicks -ne 0) { throw 'Disabled cloud selection must not dispatch a click.' }
+    $menu.UpdateAppearance($true, $true, $true)
+    $menu.CloudSessionsItem.PerformClick()
+    $menu.CloudSessionsItem.remove_Click($cloudHandler)
+    if ($script:cloudActionClicks -ne 1) { throw 'The enabled cloud action cannot be bound.' }
     $menu.SessionsItem.Select()
     if (!$menu.SessionsItem.Selected) { throw 'The menu item must retain native selection.' }
     $selected = $menu.RenderPreview(1)

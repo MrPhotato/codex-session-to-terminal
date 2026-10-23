@@ -277,3 +277,15 @@ test('interactive errors remain visible, but checks and explicit lifecycle exits
   assert.equal(shouldWaitOnError({ code: 'CLI_START_FAILED' }, false, false), false);
   assert.equal(shouldWaitOnError({ code: 'CLI_START_FAILED' }, true, true), false);
 });
+
+test('production terminal host preserves local mode and binds the toolbar without navigation at startup',async()=>{
+  let viewed,resolveView,opens=0,closed=0;
+  const f=fixture({spawnFn:undefined,createButtonAction:args=>{
+    assert.equal(args.threadId,threadId);assert.equal(args.hostId,'local');
+    return {open:async()=>{opens++;return {navigated:true};},close:async()=>{closed++;}};
+  },runView:async(launch,settings)=>{viewed={launch,settings};return new Promise(resolve=>{resolveView=resolve;});}});
+  const running=runNativeTerminal(options,f.dependencies);await nextTurn();
+  assert.equal(viewed.settings.mode,'local');assert.equal(opens,0);
+  await viewed.settings.onOpenDesktop();assert.equal(opens,1);resolveView(0);
+  assert.equal(await running,0);assert.equal(closed,1);assert.equal(f.calls.bridgeClose,1);
+});

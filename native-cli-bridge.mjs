@@ -24,11 +24,15 @@ export function resumeFromLiveSnapshot(metadata, state) {
   required(state.latestThreadSettings, 'thread settings');
   const settings = inheritedThreadSettings(state);
   const permissions = required(state.currentPermissions, 'current permissions');
+  const provider = settings.modelProvider ?? state.modelProvider;
+  if (typeof provider !== 'string') throw error('The current Desktop snapshot has no valid model provider.', -32000, 'INCOMPLETE_STATE');
   const thread = { ...metadata.thread, name: state.title ?? metadata.thread.name,
     sessionId: required(state.sessionId, 'session ID'),
     status: required(state.threadRuntimeStatus, 'runtime status'),
     model: required(settings.model ?? state.latestModel, 'model'),
-    modelProvider: required(settings.modelProvider ?? state.modelProvider, 'model provider'),
+    // Durable snapshots may explicitly use an empty provider. Both official
+    // Thread schemas allow it; preserve the value instead of guessing one.
+    modelProvider: state.hostId === 'durable' ? provider : required(provider, 'model provider'),
     cwd: required(settings.cwd ?? state.cwd, 'working directory'),
   };
   return {

@@ -7,6 +7,11 @@ function Test-SessionBridgeDependencies {
         'node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
         'node_modules\ws\index.js'
         'node_modules\ajv\dist\ajv.js'
+        'node_modules\node-pty\lib\index.js'
+        'node_modules\node-pty\prebuilds\win32-x64\conpty.node'
+        'node_modules\node-pty\prebuilds\win32-x64\conpty\conpty.dll'
+        'node_modules\node-pty\prebuilds\win32-x64\conpty\OpenConsole.exe'
+        'node_modules\@xterm\headless\lib-headless\xterm-headless.js'
     )
     foreach ($relativePath in $requiredFiles) {
         if (!(Test-Path -LiteralPath (Join-Path $ApplicationRoot $relativePath) -PathType Leaf)) { return $false }
@@ -17,10 +22,14 @@ function Test-SessionBridgeDependencies {
         $nativeCli = Get-Content -LiteralPath (Join-Path $ApplicationRoot 'node_modules\@openai\codex-win32-x64\package.json') -Raw | ConvertFrom-Json
         $ws = Get-Content -LiteralPath (Join-Path $ApplicationRoot 'node_modules\ws\package.json') -Raw | ConvertFrom-Json
         $ajv = Get-Content -LiteralPath (Join-Path $ApplicationRoot 'node_modules\ajv\package.json') -Raw | ConvertFrom-Json
+        $ptyPackage = Get-Content -LiteralPath (Join-Path $ApplicationRoot 'node_modules\node-pty\package.json') -Raw | ConvertFrom-Json
+        $terminalPackage = Get-Content -LiteralPath (Join-Path $ApplicationRoot 'node_modules\@xterm\headless\package.json') -Raw | ConvertFrom-Json
         return $cli.version -ceq $ExpectedCliVersion -and
             $nativeCli.version -ceq ($ExpectedCliVersion + '-win32-x64') -and
             $ws.version -ceq $manifest.dependencies.ws -and
-            $ajv.version -ceq $manifest.dependencies.ajv
+            $ajv.version -ceq $manifest.dependencies.ajv -and
+            $ptyPackage.version -ceq $manifest.dependencies.'node-pty' -and
+            $terminalPackage.version -ceq $manifest.dependencies.'@xterm/headless'
     } catch { return $false }
 }
 

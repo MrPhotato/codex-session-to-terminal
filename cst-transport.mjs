@@ -7,18 +7,25 @@ import { fileURLToPath } from 'node:url';
 // A separate PowerShell helper checks the server PID, executable and Windows
 // user on the exact named-pipe handle that carries the traffic. Never send a
 // prompt to an unverified same-name pipe.
-export function verifiedDesktopTransport(powershellPath, { spawnHelper = spawn } = {}) {
+export function verifiedDesktopTransport(powershellPath, { spawnHelper = spawn, pipeName = 'codex-ipc' } = {}) {
   if (!isAbsolute(powershellPath ?? '')) throw new Error('A full PowerShell path is required.');
+  if (typeof pipeName !== 'string' || !/^(?:codex-ipc|codex-app-tools-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i.test(pipeName)) {
+    throw new Error('Only a supported Desktop pipe name is allowed.');
+  }
   const helper = join(dirname(fileURLToPath(import.meta.url)), 'desktop-pipe-proxy.ps1');
   return async ({ signal } = {}) => {
     if (signal?.aborted) throw new Error('Desktop connection cancelled.');
-    const child = spawnHelper(powershellPath, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helper], {
+    const child = spawnHelper(powershellPath, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helper,
+      ...(pipeName === 'codex-ipc' ? [] : ['-PipeName', pipeName])], {
       windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
     const decoder = new StringDecoder('utf8');
     let diagnostics = '', stderrBuffer = '', ready = false, resolveReady, rejectReady;
     const readiness = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     const stream = new Duplex({
+      // EOF can precede the helper's exit status. Only child.close may confirm
+      // a clean shutdown; auto-destruction would hide a later nonzero exit.
+      autoDestroy: false,
       read() { child.stdout.resume(); },
       write(chunk, encoding, callback) { child.stdin.write(chunk, encoding, callback); },
       final(callback) { child.stdin.end(callback); },
@@ -58,8 +65,9 @@ export function verifiedDesktopTransport(powershellPath, { spawnHelper = spawn }
     for (const source of [child.stdin, child.stdout, child.stderr]) source.on('error', error => stream.destroy(error));
     child.on('error', error => stream.destroy(error));
     // close follows stdio drain; exit can precede the last IPC bytes.
-    child.once('close', code => {
-      if (!stream.destroyed) stream.destroy(code ? new Error((diagnostics + stderrBuffer).trim() || 'Desktop pipe verification failed.') : undefined);
+    child.once('close', (code, signal) => {
+      const clean = code === 0 && signal == null;
+      if (!stream.destroyed) stream.destroy(clean ? undefined : new Error((diagnostics + stderrBuffer).trim() || 'Desktop pipe helper did not exit cleanly.'));
     });
     if (signal?.aborted) abort();
     return readiness;

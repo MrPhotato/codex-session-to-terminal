@@ -22,8 +22,9 @@ function Get-CstInterfaceText {
             Running = 'Codex Session to Terminal 正在托盘运行。点击图标查看终端会话。'
             Sessions = '终端会话'; Waiting = '等待 ChatGPT'; Ready = '已就绪 · ChatGPT 正在运行'
             Hint = '在 ChatGPT 中按 Ctrl+Alt+L'; Exit = '退出 Codex Session to Terminal'
-            TooltipReady = 'Codex Session to Terminal · Ctrl+Alt+L 打开当前聊天'; TooltipWaiting = 'Codex Session to Terminal · 等待 ChatGPT'
+            TooltipReady = 'Codex Session to Terminal · Ctrl+Alt+L 打开终端'; TooltipWaiting = 'Codex Session to Terminal · 等待 ChatGPT'
             OpenFailed = '终端未能打开。ChatGPT 仍在正常运行。'
+            ShortcutUnavailable = '云端快捷键暂不可用，请右键托盘图标，选择“打开云端只读会话”。'
             StartFailed = 'Codex Session to Terminal 无法启动，请检查程序文件和运行环境是否完整。'
         }
     }
@@ -31,8 +32,9 @@ function Get-CstInterfaceText {
         Running = 'Codex Session to Terminal is running in the system tray. Click its icon to view terminal sessions.'
         Sessions = 'Terminal sessions'; Waiting = 'Waiting for ChatGPT'; Ready = 'Ready · ChatGPT is running'
         Hint = 'In ChatGPT, press Ctrl+Alt+L'; Exit = 'Exit Codex Session to Terminal'
-        TooltipReady = 'Codex Session to Terminal · Ctrl+Alt+L opens this chat'; TooltipWaiting = 'Codex Session to Terminal · waiting for ChatGPT'
+        TooltipReady = 'Codex Session to Terminal · Ctrl+Alt+L opens a terminal'; TooltipWaiting = 'Codex Session to Terminal · waiting for ChatGPT'
         OpenFailed = 'The terminal could not be opened. ChatGPT is still running normally.'
+        ShortcutUnavailable = 'The online shortcut is unavailable. Right-click the tray icon and choose Open online read-only session.'
         StartFailed = 'Codex Session to Terminal could not start. Check that its files and runtimes are installed correctly.'
     }
 }

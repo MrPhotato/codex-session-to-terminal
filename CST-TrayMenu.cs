@@ -12,6 +12,7 @@ namespace CodexSessionToTerminal
     {
         public const string Brand = "Codex Session to Terminal";
         public readonly ToolStripMenuItem SessionsItem;
+        public readonly ToolStripMenuItem CloudSessionsItem;
         public readonly ToolStripMenuItem ExitItem;
         private readonly ToolStripLabel heading;
         private readonly ToolStripLabel status;
@@ -42,9 +43,10 @@ namespace CodexSessionToTerminal
             status = Info("status");
             hint = Info("hint");
             SessionsItem = ActionItem("sessions");
+            CloudSessionsItem = ActionItem("cloud");
             ExitItem = ActionItem("exit");
             separator = new ToolStripSeparator { AutoSize = false, Margin = Padding.Empty };
-            Items.AddRange(new ToolStripItem[] { heading, status, SessionsItem, separator, ExitItem, hint });
+            Items.AddRange(new ToolStripItem[] { heading, status, SessionsItem, CloudSessionsItem, separator, ExitItem, hint });
             UpdateAppearance(false, false, false);
         }
 
@@ -80,6 +82,8 @@ namespace CodexSessionToTerminal
             status.Text = chinese ? (desktopReady ? "已就绪 · ChatGPT 正在运行" : "等待 ChatGPT 启动")
                 : (desktopReady ? "Ready · ChatGPT is running" : "Waiting for ChatGPT");
             SessionsItem.Text = chinese ? "查看终端会话" : "View terminal sessions";
+            CloudSessionsItem.Text = chinese ? "打开云端只读会话" : "Open online read-only session";
+            CloudSessionsItem.Enabled = desktopReady;
             ExitItem.Text = chinese ? "退出" : "Exit";
             hint.Text = chinese ? "在 ChatGPT 中按 Ctrl+Alt+L" : "In ChatGPT, press Ctrl+Alt+L";
             AccessibleDescription = status.Text;
@@ -90,7 +94,7 @@ namespace CodexSessionToTerminal
             if (metricsChanged) ApplyMetrics(nextScale);
             else
             {
-                foreach (ToolStripMenuItem item in new[] { SessionsItem, ExitItem }) item.ForeColor = Foreground;
+                foreach (ToolStripMenuItem item in new[] { SessionsItem, CloudSessionsItem, ExitItem }) item.ForeColor = Foreground;
                 foreach (ToolStripLabel item in new[] { heading, status, hint }) item.ForeColor = item == heading ? Foreground : Muted;
             }
             appearanceInitialized = true;
@@ -120,7 +124,7 @@ namespace CodexSessionToTerminal
             status.Font = smallFont;
             hint.Font = smallFont;
             hint.Size = new Size(itemWidth, Px(30));
-            foreach (ToolStripMenuItem item in new[] { SessionsItem, ExitItem })
+            foreach (ToolStripMenuItem item in new[] { SessionsItem, CloudSessionsItem, ExitItem })
             {
                 item.Size = new Size(itemWidth, Px(32));
                 item.Font = bodyFont;
@@ -133,7 +137,7 @@ namespace CodexSessionToTerminal
                 item.ForeColor = item == heading ? Foreground : Muted;
             }
             separator.Size = new Size(itemWidth, Px(7));
-            Size = new Size(width, Padding.Vertical + heading.Height + status.Height + 2 * SessionsItem.Height + separator.Height + hint.Height);
+            Size = new Size(width, Padding.Vertical + heading.Height + status.Height + 3 * SessionsItem.Height + separator.Height + hint.Height);
             ResumeLayout(true);
             if (previousBody != null) previousBody.Dispose();
             if (previousHeading != null) previousHeading.Dispose();
@@ -267,9 +271,16 @@ namespace CodexSessionToTerminal
                         graphics.DrawLines(pen, new[] { new PointF(x + 4 * s, y + 5 * s), new PointF(x + 7 * s, y + 8 * s), new PointF(x + 4 * s, y + 11 * s) });
                         graphics.DrawLine(pen, x + 10 * s, y + 11 * s, x + 14 * s, y + 11 * s);
                     }
-                    else if (tag == "legacy")
+                    else if (tag == "cloud")
                     {
-                        graphics.DrawLines(pen, new[] { new PointF(x + 8 * s, y + 2 * s), new PointF(x + 7 * s, y), new PointF(x, y), new PointF(x, y + 16 * s), new PointF(x + 19 * s, y + 16 * s), new PointF(x + 19 * s, y + 4 * s), new PointF(x + 10 * s, y + 4 * s), new PointF(x + 8 * s, y + 2 * s) });
+                        using (GraphicsPath path = new GraphicsPath())
+                        {
+                            path.AddBezier(x + 4 * s, y + 14 * s, x - s, y + 14 * s, x - s, y + 6 * s, x + 5 * s, y + 6 * s);
+                            path.AddBezier(x + 5 * s, y + 6 * s, x + 7 * s, y - s, x + 16 * s, y + s, x + 16 * s, y + 7 * s);
+                            path.AddBezier(x + 16 * s, y + 7 * s, x + 21 * s, y + 7 * s, x + 21 * s, y + 14 * s, x + 16 * s, y + 14 * s);
+                            path.CloseFigure();
+                            graphics.DrawPath(pen, path);
+                        }
                     }
                     else if (tag == "exit")
                     {

@@ -48,10 +48,26 @@ function childFixture() {
   const child = new EventEmitter();
   child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
   child.exitCode = null; child.signalCode = null; child.kills = 0;
-  child.kill = () => { child.kills++; child.signalCode = 'SIGTERM'; queueMicrotask(() => child.emit('close', null)); return true; };
+  child.kill = () => { child.kills++; child.signalCode = 'SIGTERM'; queueMicrotask(() => child.emit('close', null, 'SIGTERM')); return true; };
   return child;
 }
 const powershellPath = resolve('fixture-pwsh.exe');
+
+test('transport keeps default local arguments and admits only an exact app-tools pipe name', async () => {
+  for (const pipeName of [undefined, 'codex-app-tools-11111111-2222-4333-8444-555555555555']) {
+    const child = childFixture(); let args;
+    const pending = verifiedDesktopTransport(powershellPath, { pipeName, spawnHelper: (_exe, value) => { args = value; return child; } })();
+    child.stderr.write('CST_PIPE_VERIFIED\n');
+    const stream = await pending;
+    assert.equal(args.includes('-PipeName'), pipeName !== undefined);
+    if (pipeName) assert.deepEqual(args.slice(-2), ['-PipeName', pipeName]);
+    else assert.equal(args.at(-2), '-File');
+    stream.destroy();
+  }
+  for (const pipeName of ['other', 'codex-app-tools-invalid', '\\\\.\\pipe\\codex-ipc', 'codex-ipc\n', 'codex-ipc; command']) {
+    assert.throws(() => verifiedDesktopTransport(powershellPath, { pipeName, spawnHelper: () => assert.fail('must not spawn') }), /supported Desktop pipe/);
+  }
+});
 
 test('transport waits for verified readiness and preserves split UTF8 IPC bytes', async () => {
   const child = childFixture(); let settled = false;
@@ -77,6 +93,63 @@ test('transport cancellation before and after verification kills only its helper
     else { abort.abort(); await assert.rejects(pending, /cancelled/); }
     assert.equal(child.kills, 1);
   }
+});
+
+test('transport EOF preserves drained bytes and waits for the helper clean close', async () => {
+  const child = childFixture();
+  const pending = verifiedDesktopTransport(powershellPath, { spawnHelper: () => child })();
+  child.stderr.write('CST_PIPE_VERIFIED\n');
+  const stream = await pending, chunks = [], errors = [];
+  stream.on('data', bytes => chunks.push(bytes));
+  stream.on('error', error => errors.push(error));
+  const closed = new Promise(resolve => stream.once('close', resolve));
+  child.stdout.end(Buffer.from('final IPC bytes'));
+  stream.end();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(Buffer.concat(chunks), Buffer.from('final IPC bytes'));
+  assert.equal(stream.destroyed, false);
+  assert.equal(child.kills, 0);
+  child.exitCode = 0; child.emit('close', 0, null);
+  await closed;
+  assert.equal(stream.destroyed, true);
+  assert.equal(child.kills, 0);
+  assert.deepEqual(errors, []);
+});
+
+test('transport EOF cannot hide a later failed, signaled or unknown helper exit', async () => {
+  for (const [code, signal] of [[1, null], [null, 'SIGTERM'], [null, null], [0, 'SIGTERM']]) {
+    const child = childFixture();
+    const pending = verifiedDesktopTransport(powershellPath, { spawnHelper: () => child })();
+    child.stderr.write('CST_PIPE_VERIFIED\n');
+    const stream = await pending, errors = [];
+    stream.on('error', error => errors.push(error)); stream.resume();
+    const closed = new Promise(resolve => stream.once('close', resolve));
+    stream.end(); child.stdout.end();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(stream.destroyed, false);
+    assert.equal(child.kills, 0);
+    child.exitCode = code; child.signalCode = signal; child.emit('close', code, signal);
+    await closed;
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].message, /did not exit cleanly/);
+  }
+});
+
+test('transport cancellation after EOF remains a failure while awaiting helper exit', async () => {
+  const child = childFixture(), abort = new AbortController();
+  const pending = verifiedDesktopTransport(powershellPath, { spawnHelper: () => child })({ signal: abort.signal });
+  child.stderr.write('CST_PIPE_VERIFIED\n');
+  const stream = await pending, errors = [];
+  stream.on('error', error => errors.push(error)); stream.resume();
+  const closed = new Promise(resolve => stream.once('close', resolve));
+  stream.end(); child.stdout.end();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stream.destroyed, false);
+  abort.abort();
+  await closed;
+  assert.equal(child.kills, 1);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /cancelled/);
 });
 
 test('early spawn failure rejects without an unhandled stream error', async () => {

@@ -176,40 +176,139 @@ function Close-CstStatusReader {
 }
 
 function Get-CstTerminalArguments {
-    param([Parameter(Mandatory)][guid]$ThreadId, [Parameter(Mandatory)][string]$ControlDirectory, [Parameter(Mandatory)][string]$PowerShellPath, [Parameter(Mandatory)][string]$BackendPath)
-    @((Join-Path $PSScriptRoot 'cst-native-terminal.mjs'), '--thread', $ThreadId.ToString('D'), '--control-directory', [IO.Path]::GetFullPath($ControlDirectory), '--powershell-path', $PowerShellPath, '--backend-path', $BackendPath)
+    param([Parameter(Mandatory)][guid]$ThreadId, [Parameter(Mandatory)][string]$ControlDirectory, [Parameter(Mandatory)][string]$PowerShellPath, [Parameter(Mandatory)][string]$BackendPath,
+        [ValidateSet('local','durable')][string]$HostId = 'local')
+    $entry = if ($HostId -ceq 'durable') { 'cst-cloud-terminal.mjs' } else { 'cst-native-terminal.mjs' }
+    @((Join-Path $PSScriptRoot $entry), '--thread', $ThreadId.ToString('D'), '--control-directory', [IO.Path]::GetFullPath($ControlDirectory), '--powershell-path', $PowerShellPath, '--backend-path', $BackendPath)
 }
 
-function Invoke-CstTerminal {
-    param([Parameter(Mandatory)][guid]$ThreadId, [Parameter(Mandatory)][string]$ControlDirectory, [Parameter(Mandatory)][string]$NodeExecutable, [Parameter(Mandatory)][int]$DesktopPid, [Parameter(Mandatory)][string]$BackendPath)
-    if ([CodexSharedSession.ClipboardLinkListener]::ForegroundProcessId() -ne $DesktopPid) { return }
-    $sourceWindow = [CodexSharedSession.TerminalWindows]::Foreground()
+function Receive-CstShortcutFallback {
+    param([Parameter(Mandatory)][hashtable]$State, [long]$SourceWindow, [int]$ForegroundPid,
+        [int]$DesktopPid, [long]$DesktopStartTicks, [DateTime]$Now = [DateTime]::UtcNow)
+    $pending = $State.ShortcutPending
+    if (!$pending) { return }
+    # Cancel on any observed focus/generation change. A stalled UI must not
+    # open an old request much later. No current chat is inferred here.
+    $age = ($Now - $pending.At).TotalMilliseconds
+    if ($SourceWindow -ne $pending.SourceWindow -or $ForegroundPid -ne $pending.DesktopPid -or
+        $DesktopPid -ne $pending.DesktopPid -or $DesktopStartTicks -ne $pending.DesktopStartTicks -or
+        $age -lt 0 -or $age -gt 3000) { $State.ShortcutPending = $null; return }
+    if ($age -lt 900) { return }
+    $State.ShortcutPending = $null
+    return $pending
+}
+
+function Get-CstCloudTerminalArguments {
+    param([Parameter(Mandatory)][string]$ControlDirectory, [Parameter(Mandatory)][string]$PowerShellPath, [Parameter(Mandatory)][string]$BackendPath, [string]$TitleContext)
+    @((Join-Path $PSScriptRoot 'cst-cloud-terminal.mjs'), '--control-directory', [IO.Path]::GetFullPath($ControlDirectory), '--powershell-path', $PowerShellPath, '--backend-path', $BackendPath)
+    if ($TitleContext) { @('--title-context', $TitleContext) }
+}
+
+function Start-CstTitleProbe {
+    param([Parameter(Mandatory)]$Request)
+    $probe = @{ Request=$Request; At=[DateTime]::UtcNow; Process=$null; Output=$null; Errors=$null }
+    try {
+        $helper = Join-Path $PSScriptRoot 'bin\Desktop-Context.exe'
+        if (!(Test-Path -LiteralPath $helper -PathType Leaf)) { return $probe }
+        $info = [Diagnostics.ProcessStartInfo]::new($helper)
+        $info.UseShellExecute=$false; $info.CreateNoWindow=$true; $info.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden
+        $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+        $info.StandardOutputEncoding=[Text.Encoding]::UTF8
+        foreach ($item in @('--pid', [string]$Request.DesktopPid, '--window', [string]$Request.SourceWindow, '--started', [string]$Request.DesktopStartTicks)) { $info.ArgumentList.Add($item) }
+        $probe.Process = [Diagnostics.Process]::Start($info)
+        $probe.Output = $probe.Process.StandardOutput.ReadToEndAsync()
+        $probe.Errors = $probe.Process.StandardError.ReadToEndAsync()
+    } catch { Close-CstTitleProbe -Probe $probe }
+    return $probe
+}
+
+function Close-CstTitleProbe {
+    param($Probe)
+    if ($Probe -and $Probe.Process) {
+        # Only this short-lived, read-only child belongs to the probe. Never
+        # wait on UIA on the tray's message thread or touch the Desktop process.
+        try { if (!$Probe.Process.HasExited) { $Probe.Process.Kill() } } catch { }
+        $Probe.Process.Dispose(); $Probe.Process=$null
+    }
+}
+
+function Receive-CstTitleProbe {
+    param([Parameter(Mandatory)]$Probe, [DateTime]$Now=[DateTime]::UtcNow)
+    $result = [pscustomobject]@{ Context=$null }
+    if (!$Probe.Process) { return $result }
+    $age = ($Now - $Probe.At).TotalMilliseconds
+    if ($age -ge 0 -and $age -lt 1500 -and
+        (!$Probe.Process.HasExited -or !$Probe.Output.IsCompleted -or !$Probe.Errors.IsCompleted)) { return }
+    try {
+        if ($age -lt 0 -or $age -ge 1500 -or !$Probe.Process.HasExited -or $Probe.Process.ExitCode -ne 0 -or
+            !$Probe.Output.IsCompletedSuccessfully -or !$Probe.Errors.IsCompletedSuccessfully) { return $result }
+        $raw = $Probe.Output.Result
+        if ($raw.Length -gt 8192 -or $Probe.Errors.Result.Length) { return $result }
+        $value = $raw | ConvertFrom-Json -ErrorAction Stop
+        if ($value.version -ne 1 -or $value.status -cne 'ready' -or
+            $value.pid -ne $Probe.Request.DesktopPid -or $value.window -ne $Probe.Request.SourceWindow -or
+            $value.started -cne [string]$Probe.Request.DesktopStartTicks -or
+            $value.title -isnot [string] -or $value.title.Length -eq 0 -or $value.title.Length -gt 512) { return $result }
+        $value | Add-Member -NotePropertyName capturedAt -NotePropertyValue ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) -Force
+        $result.Context = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($value | ConvertTo-Json -Compress)))
+    } catch { } finally { Close-CstTitleProbe -Probe $Probe }
+    return $result
+}
+
+function Start-CstTerminalWindow {
+    param([Parameter(Mandatory)][string[]]$NodeArguments, [Parameter(Mandatory)][string]$ControlDirectory,
+        [Parameter(Mandatory)][string]$NodeExecutable, [Parameter(Mandatory)][string]$PowerShellPath,
+        [long]$SourceWindow = 0, [switch]$ExplicitMenuLaunch)
+    # A menu click authorizes opening its own terminal even when another app is
+    # foreground. Focus handling below still targets only that new window and
+    # stops trying to activate it if the user changes apps.
+    if ($ExplicitMenuLaunch) { $SourceWindow = [CodexSharedSession.TerminalWindows]::Foreground() }
+    elseif ($SourceWindow -eq 0) { return }
     $beforeHandles = @([CodexSharedSession.TerminalWindows]::Snapshot() | ForEach-Object Handle)
     $windowTitle = 'Codex Session to Terminal ' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
-    $powerShellPath = Join-Path $PSHOME 'pwsh.exe'
-    $nodeArguments = @(Get-CstTerminalArguments -ThreadId $ThreadId -ControlDirectory $ControlDirectory -PowerShellPath $powerShellPath -BackendPath $BackendPath)
     $terminal = Get-Command wt.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ([CodexSharedSession.TerminalWindows]::Foreground() -ne $sourceWindow) { return }
+    if (!$ExplicitMenuLaunch -and [CodexSharedSession.TerminalWindows]::Foreground() -ne $SourceWindow) { return }
     $created = $null
     try {
         if ($terminal) {
             $info = [Diagnostics.ProcessStartInfo]::new($terminal.Source)
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
-            foreach ($argument in (@('-w','new','new-tab','--title',$windowTitle,$NodeExecutable) + $nodeArguments)) { $info.ArgumentList.Add($argument) }
+            foreach ($argument in (@('-w','new','new-tab','--title',$windowTitle,$NodeExecutable) + $NodeArguments)) { $info.ArgumentList.Add($argument) }
             $created = [Diagnostics.Process]::Start($info)
-            $status = Invoke-CodexTerminalForeground -SourceWindow $sourceWindow -BeforeHandles $beforeHandles -WindowTitle $windowTitle
+            $status = Invoke-CodexTerminalForeground -SourceWindow $SourceWindow -BeforeHandles $beforeHandles -WindowTitle $windowTitle
         } else {
             # Encode a literal-only invocation so spaces, quotes and shell punctuation
             # in the installation directory never become PowerShell instructions.
-            $literals = @(@($NodeExecutable) + $nodeArguments | ForEach-Object { "'" + $_.Replace("'", "''") + "'" })
+            $literals = @(@($NodeExecutable) + $NodeArguments | ForEach-Object { "'" + $_.Replace("'", "''") + "'" })
             $command = '$Host.UI.RawUI.WindowTitle=' + "'" + $windowTitle + "'; & " + ($literals -join ' ') + '; exit $LASTEXITCODE'
             $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-            $created = Start-Process -FilePath $powerShellPath -ArgumentList @('-NoLogo','-NoProfile','-EncodedCommand',$encoded) -WorkingDirectory $PSScriptRoot -WindowStyle Normal -PassThru
-            $status = Invoke-CodexTerminalForeground -SourceWindow $sourceWindow -BeforeHandles $beforeHandles -WindowTitle $windowTitle -Mode PowerShell -CreatedProcess $created
+            $created = Start-Process -FilePath $PowerShellPath -ArgumentList @('-NoLogo','-NoProfile','-EncodedCommand',$encoded) -WorkingDirectory $PSScriptRoot -WindowStyle Normal -PassThru
+            $status = Invoke-CodexTerminalForeground -SourceWindow $SourceWindow -BeforeHandles $beforeHandles -WindowTitle $windowTitle -Mode PowerShell -CreatedProcess $created
         }
         @{ at = [DateTime]::UtcNow.ToString('o'); status = $status } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $ControlDirectory 'last-terminal-focus.json') -Encoding utf8
     } finally { if ($created) { $created.Dispose() } }
+}
+
+function Invoke-CstTerminal {
+    param([Parameter(Mandatory)][guid]$ThreadId, [Parameter(Mandatory)][string]$ControlDirectory, [Parameter(Mandatory)][string]$NodeExecutable, [Parameter(Mandatory)][int]$DesktopPid, [Parameter(Mandatory)][string]$BackendPath,
+        [ValidateSet('local','durable')][string]$HostId = 'local')
+    if ([CodexSharedSession.ClipboardLinkListener]::ForegroundProcessId() -ne $DesktopPid) { return }
+    $sourceWindow = [CodexSharedSession.TerminalWindows]::Foreground()
+    $powerShellPath = Join-Path $PSHOME 'pwsh.exe'
+    $nodeArguments = @(Get-CstTerminalArguments -ThreadId $ThreadId -HostId $HostId -ControlDirectory $ControlDirectory -PowerShellPath $powerShellPath -BackendPath $BackendPath)
+    Start-CstTerminalWindow -NodeArguments $nodeArguments -ControlDirectory $ControlDirectory -NodeExecutable $NodeExecutable -PowerShellPath $powerShellPath -SourceWindow $sourceWindow
+}
+
+function Invoke-CstCloudTerminal {
+    param([Parameter(Mandatory)][string]$ControlDirectory, [Parameter(Mandatory)][string]$NodeExecutable, [Parameter(Mandatory)][string]$BackendPath,
+        [switch]$FromShortcut, [long]$SourceWindow = 0, [int]$DesktopPid = 0, [string]$TitleContext)
+    if ($FromShortcut -and ($SourceWindow -eq 0 -or $DesktopPid -le 0 -or
+        [CodexSharedSession.ClipboardLinkListener]::ForegroundProcessId() -ne $DesktopPid -or
+        [CodexSharedSession.TerminalWindows]::Foreground() -ne $SourceWindow)) { return }
+    $powerShellPath = Join-Path $PSHOME 'pwsh.exe'
+    $nodeArguments = @(Get-CstCloudTerminalArguments -ControlDirectory $ControlDirectory -PowerShellPath $powerShellPath -BackendPath $BackendPath -TitleContext $(if ($FromShortcut) { $TitleContext }))
+    Start-CstTerminalWindow -NodeArguments $nodeArguments -ControlDirectory $ControlDirectory -NodeExecutable $NodeExecutable -PowerShellPath $powerShellPath -SourceWindow $SourceWindow -ExplicitMenuLaunch:(!$FromShortcut)
 }
 
 function Start-CstTray {
@@ -217,7 +316,7 @@ function Start-CstTray {
     if (!$IsWindows -or [Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { throw 'Start Codex Session to Terminal with PowerShell 7 -STA on Windows.' }
     $instance = $null; $tray = $null; $icon = $null; $menu = $null; $panel = $null; $heartbeat = $null; $runDirectory = $null
     $reader = $null; $timer = $null; $context = $null
-    $state = @{ Exit = $false; Desktop = $null; Listener = $null; LastThread = ''; LastLaunch = [DateTime]::MinValue; Text = $null; TickRunning = $false; Failure = $null; NextCheck = [DateTime]::MinValue }
+    $state = @{ Exit = $false; Desktop = $null; Listener = $null; ShortcutPending = $null; TitleProbe = $null; LastThread = ''; LastLaunch = [DateTime]::MinValue; Text = $null; TickRunning = $false; Failure = $null; NextCheck = [DateTime]::MinValue }
     try {
         $instance = New-CstTrayInstance
         if (!$instance.OwnsMutex) { return }
@@ -246,6 +345,15 @@ function Start-CstTray {
         $menu = [CodexSessionToTerminal.TrayMenu]::new()
         $menu.UpdateAppearance([CodexSessionToTerminal.SystemAppearance]::IsDark(), $chinese, $false)
         $menu.SessionsItem.add_Click({ $panel.ShowPanel() })
+        $menu.CloudSessionsItem.add_Click({
+            if (!$state.Desktop -or $state.Exit) { return }
+            try {
+                $current = Get-Process -Id $state.Desktop.Id -ErrorAction Stop
+                if ($current.StartTime.ToUniversalTime().Ticks -ne $state.Desktop.StartTicks) { throw 'The selected ChatGPT process has changed.' }
+                Invoke-CstCloudTerminal -ControlDirectory $runDirectory -NodeExecutable $NodeExecutable -BackendPath $state.Desktop.BackendPath
+            }
+            catch { $tray.ShowBalloonTip(4000, 'Codex Session to Terminal', $state.Text.OpenFailed, [Windows.Forms.ToolTipIcon]::Warning) }
+        })
         $menu.ExitItem.add_Click({ $state.Exit = $true })
         $tray = [Windows.Forms.NotifyIcon]::new()
         $icon = [Drawing.Icon]::new((Join-Path $PSScriptRoot 'assets\icon.ico'))
@@ -259,17 +367,27 @@ function Start-CstTray {
         # so a suppressed notification never makes CST appear unresponsive.
         $tray.ShowBalloonTip(5000, 'Codex Session to Terminal', $state.Text.Running, [Windows.Forms.ToolTipIcon]::Info)
         Show-CstRequestedPanel -Instance $instance -Panel $panel -Initial
+        $onShortcutPressed = [Action] {
+            if (!$state.Desktop -or $state.Exit -or
+                [CodexSharedSession.ClipboardLinkListener]::ForegroundProcessId() -ne $state.Desktop.Id) { return }
+            Close-CstTitleProbe -Probe $state.TitleProbe; $state.TitleProbe=$null
+            $state.ShortcutPending = @{ At = [DateTime]::UtcNow; SourceWindow = [CodexSharedSession.TerminalWindows]::Foreground()
+                DesktopPid = $state.Desktop.Id; DesktopStartTicks = $state.Desktop.StartTicks }
+        }
         $onTextChanged = [Action[string]] {
             param([string]$Text)
-            $thread = ConvertFrom-CodexLocalThreadLink -Text $Text
-            if (!$thread -or !$state.Desktop -or $state.Exit) { return }
+            $link = ConvertFrom-CodexThreadLink -Text $Text
+            if (!$link -or !$state.Desktop -or $state.Exit) { return }
+            $state.ShortcutPending = $null
+            Close-CstTitleProbe -Probe $state.TitleProbe; $state.TitleProbe=$null
+            $threadKey = $link.HostId + ':' + $link.ThreadId.ToString('D')
             $now = [DateTime]::UtcNow
-            if ($state.LastThread -eq $thread.ToString('D') -and ($now - $state.LastLaunch).TotalSeconds -lt 2) { return }
-            $state.LastThread = $thread.ToString('D'); $state.LastLaunch = $now
+            if ($state.LastThread -eq $threadKey -and ($now - $state.LastLaunch).TotalSeconds -lt 2) { return }
+            $state.LastThread = $threadKey; $state.LastLaunch = $now
             try {
                 $current = Get-Process -Id $state.Desktop.Id -ErrorAction Stop
                 if ($current.StartTime.ToUniversalTime().Ticks -ne $state.Desktop.StartTicks) { return }
-                Invoke-CstTerminal -ThreadId $thread -ControlDirectory $runDirectory -NodeExecutable $NodeExecutable -DesktopPid $state.Desktop.Id -BackendPath $state.Desktop.BackendPath
+                Invoke-CstTerminal -ThreadId $link.ThreadId -HostId $link.HostId -ControlDirectory $runDirectory -NodeExecutable $NodeExecutable -DesktopPid $state.Desktop.Id -BackendPath $state.Desktop.BackendPath
             }
             catch { $tray.ShowBalloonTip(4000, 'Codex Session to Terminal', $state.Text.OpenFailed, [Windows.Forms.ToolTipIcon]::Warning) }
         }
@@ -291,9 +409,18 @@ function Start-CstTray {
                 $identity = if ($desktop) { "$($desktop.Id):$($desktop.StartTicks)" } else { '' }
                 $previous = if ($state.Desktop) { "$($state.Desktop.Id):$($state.Desktop.StartTicks)" } else { '' }
                 if ($identity -ne $previous) {
-                    if ($state.Listener) { $state.Listener.remove_TextChanged($onTextChanged); $state.Listener.Dispose(); $state.Listener = $null }
+                    $state.ShortcutPending = $null
+                    Close-CstTitleProbe -Probe $state.TitleProbe; $state.TitleProbe=$null
+                    if ($state.Listener) { $state.Listener.remove_TextChanged($onTextChanged); $state.Listener.remove_ShortcutPressed($onShortcutPressed); $state.Listener.Dispose(); $state.Listener = $null }
                     $state.Desktop = $desktop
-                    if ($desktop) { $state.Listener = [CodexSharedSession.ClipboardLinkListener]::new([uint32]$desktop.Id); $state.Listener.add_TextChanged($onTextChanged) }
+                    if ($desktop) {
+                        $state.Listener = [CodexSharedSession.ClipboardLinkListener]::new([uint32]$desktop.Id, $true)
+                        $state.Listener.add_TextChanged($onTextChanged)
+                        $state.Listener.add_ShortcutPressed($onShortcutPressed)
+                        if (!$state.Listener.ShortcutObservationEnabled) {
+                            $tray.ShowBalloonTip(5000, 'Codex Session to Terminal', $state.Text.ShortcutUnavailable, [Windows.Forms.ToolTipIcon]::Warning)
+                        }
+                    }
                 }
                 $chinese = $snapshot.Chinese
                 $state.Text = Get-CstInterfaceText -Chinese $chinese
@@ -306,6 +433,33 @@ function Start-CstTray {
                 $state.NextCheck = [DateTime]::UtcNow.AddSeconds(2)
             }
             if ($state.Listener) { $state.Listener.Pump() }
+            if ($state.ShortcutPending -and $state.Desktop) {
+                $pending = Receive-CstShortcutFallback -State $state -SourceWindow ([CodexSharedSession.TerminalWindows]::Foreground()) -ForegroundPid ([CodexSharedSession.ClipboardLinkListener]::ForegroundProcessId()) -DesktopPid $state.Desktop.Id -DesktopStartTicks $state.Desktop.StartTicks
+                if ($pending) {
+                    Close-CstTitleProbe -Probe $state.TitleProbe
+                    $state.TitleProbe = Start-CstTitleProbe -Request $pending
+                }
+            }
+            if ($state.TitleProbe -and $state.Desktop) {
+                $pending = $state.TitleProbe.Request
+                if ([CodexSharedSession.TerminalWindows]::Foreground() -ne $pending.SourceWindow -or
+                    [CodexSharedSession.ClipboardLinkListener]::ForegroundProcessId() -ne $pending.DesktopPid -or
+                    $state.Desktop.Id -ne $pending.DesktopPid -or $state.Desktop.StartTicks -ne $pending.DesktopStartTicks -or
+                    ([DateTime]::UtcNow - $pending.At).TotalMilliseconds -gt 3000) {
+                    Close-CstTitleProbe -Probe $state.TitleProbe; $state.TitleProbe=$null
+                    return
+                }
+                $titleResult = Receive-CstTitleProbe -Probe $state.TitleProbe
+                if ($titleResult) {
+                    $state.TitleProbe=$null
+                    try {
+                        $current = Get-Process -Id $pending.DesktopPid -ErrorAction Stop
+                        if ($current.StartTime.ToUniversalTime().Ticks -eq $pending.DesktopStartTicks) {
+                            Invoke-CstCloudTerminal -ControlDirectory $runDirectory -NodeExecutable $NodeExecutable -BackendPath $state.Desktop.BackendPath -FromShortcut -SourceWindow $pending.SourceWindow -DesktopPid $pending.DesktopPid -TitleContext $titleResult.Context
+                        }
+                    } catch { $tray.ShowBalloonTip(4000, 'Codex Session to Terminal', $state.Text.OpenFailed, [Windows.Forms.ToolTipIcon]::Warning) }
+                }
+            }
           } catch {
             $state.Failure = $_
             $timer.Stop(); $context.ExitThread()
@@ -316,11 +470,12 @@ function Start-CstTray {
         if ($state.Failure) { throw $state.Failure }
     } finally {
         if ($timer) { $timer.Stop(); $timer.Dispose() }
+        Close-CstTitleProbe -Probe $state.TitleProbe
         if ($context) { $context.Dispose() }
         if ($reader) { Close-CstStatusReader -Reader $reader }
         if ($runDirectory) { try { Stop-CstRun -ControlDirectory $runDirectory } catch { } }
         if ($heartbeat) { $heartbeat.Dispose() }
-        if ($state.Listener) { $state.Listener.Dispose() }
+        if ($state.Listener) { $state.Listener.remove_TextChanged($onTextChanged); $state.Listener.remove_ShortcutPressed($onShortcutPressed); $state.Listener.Dispose() }
         if ($panel) { $panel.AllowClose = $true; $panel.Dispose() }
         if ($tray) { $tray.Visible = $false; $tray.Dispose() }
         if ($menu) { $menu.Dispose() }

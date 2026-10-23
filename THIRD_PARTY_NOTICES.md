@@ -14,6 +14,8 @@ The full upstream runtime distributions and their license files are retained. Do
 | `@openai/codex` and its Windows platform package | `0.163.0-alpha.10.2` | Apache-2.0 |
 | `ws` | `8.22.0` | MIT |
 | `ajv` | `8.17.1` | MIT |
+| `node-pty` | `1.1.0` | MIT (including bundled Windows ConPTY components and their upstream notices) |
+| `@xterm/headless` | `6.0.0` | MIT |
 
 The protocol schemas in `protocol-schema/` were generated from the official Codex app-server interface used for this adapter and are distributed under the upstream Apache-2.0 license. The schemas validate data shapes; they do not imply official support for Desktop's internal IPC.
 

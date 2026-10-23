@@ -7,8 +7,13 @@ foreach ($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1') {
     if ($errors.Count) { throw "PowerShell syntax failed: $($file.Name)" }
 }
 & (Join-Path $PSScriptRoot 'Thread-Link.Tests.ps1')
+& (Join-Path $PSScriptRoot 'Shortcut-Observer.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Launcher-Environment.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Terminal-Focus.Tests.ps1')
+& (Join-Path $PSScriptRoot 'Focus-Desktop.Tests.ps1')
+& (Join-Path $PSScriptRoot 'Desktop-Navigation.Tests.ps1')
+& (Join-Path $PSScriptRoot 'Desktop-Context.Tests.ps1')
+& (Join-Path $PSScriptRoot 'Title-Probe.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Build-Shim.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Start-Flow.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Dependencies.Tests.ps1')

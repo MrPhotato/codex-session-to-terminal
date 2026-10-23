@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 // The transport factory MUST authenticate the pipe peer before returning a stream.
 // Its framed reader permits 256 MiB. Long, valid histories can exceed 64 MiB.
 const VERSIONS = Object.freeze({ initialize: 0, 'thread-owner-discovery': 1,
+  'thread-follower-read-model-settings': 1,
   'thread-follower-start-turn': 2, 'thread-follower-steer-turn': 1,
   'thread-follower-interrupt-turn': 4, 'thread-follower-load-complete-history': 1 });
 const FOLLOWER_WRITES = new Set(['thread-follower-start-turn', 'thread-follower-steer-turn', 'thread-follower-interrupt-turn']);
@@ -19,6 +20,51 @@ const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const id = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
 const revision = value => Number.isSafeInteger(value) && value >= 0;
+const onlyKeys = (value, keys) => object(value) && Object.keys(value).every(key => keys.includes(key));
+
+// Cloud owner capability discovery does not establish support for app-supplied
+// response items. Admit only the normal text path; toolOutput on a steer can
+// instead start a new turn, so it must not leak through as an unknown field.
+function validateDurableControl(method, params, { allowAdmission = false, state, threadId, ready = false } = {}) {
+  let input;
+  if (method === 'thread-follower-start-turn') {
+    const start = params.turnStart;
+    if (!onlyKeys(params, ['conversationId', 'turnStart']) || !onlyKeys(start, ['request', 'context']) ||
+      !onlyKeys(start.request, ['threadId', 'input', 'clientUserMessageId', 'turnTrigger']) ||
+      !onlyKeys(start.context, ['restoreMessage', 'inheritThreadSettings', ...(allowAdmission ? ['useUserMessageAdmission'] : [])]) || start.context.inheritThreadSettings !== true ||
+      start.request.turnTrigger !== undefined && start.request.turnTrigger !== 'user') {
+      throw failure('UNSUPPORTED_INPUT', 'Cloud follower controls support plain text with inherited settings only.');
+    }
+    if (own(start.context, 'useUserMessageAdmission')) {
+      if (!allowAdmission || start.context.useUserMessageAdmission !== true ||
+        !id(start.request.clientUserMessageId) || !start.request.clientUserMessageId.trim() ||
+        start.context.restoreMessage?.id !== start.request.clientUserMessageId) {
+        throw failure('UNSUPPORTED_INPUT', 'Cloud admission requires its explicit opt-in and matching client message identity.');
+      }
+      if (!ready || state?.hostId !== 'durable' || state.id !== threadId || params.conversationId !== threadId ||
+        start.request.threadId !== threadId || state.mode !== 'default' || state.threadStartKind !== 'default' || state.threadSource !== 'user') {
+        throw failure('DURABLE_ADMISSION_UNAVAILABLE', 'Cloud admission requires a current, genuine default/user durable thread.');
+      }
+    }
+    input = start.request.input;
+  } else if (method === 'thread-follower-steer-turn') {
+    if (!onlyKeys(params, ['conversationId', 'input', 'restoreMessage', 'attachments', 'clientUserMessageId']) ||
+      params.attachments !== undefined && (!Array.isArray(params.attachments) || params.attachments.length !== 0)) {
+      throw failure('UNSUPPORTED_INPUT', 'Cloud follower controls support plain text only.');
+    }
+    input = params.input;
+  } else {
+    if (!onlyKeys(params, ['conversationId', 'mode', 'expectedTurnId']) || params.mode !== 'user-stop' || !id(params.expectedTurnId)) {
+      throw failure('UNSUPPORTED_INPUT', 'A cloud interrupt must identify the current turn.');
+    }
+    return;
+  }
+  if (!Array.isArray(input) || input.length === 0 || input.some(item =>
+    !onlyKeys(item, ['type', 'text', 'text_elements']) || item.type !== 'text' || typeof item.text !== 'string' ||
+    item.text_elements !== undefined && !Array.isArray(item.text_elements))) {
+    throw failure('UNSUPPORTED_INPUT', 'Cloud follower controls support plain text only.');
+  }
+}
 
 function failure(code, message, outcomeUnknown = false) {
   return Object.assign(new Error(message), { code, outcomeUnknown });
@@ -114,11 +160,18 @@ function completeHistory(state) {
  * connect resolves only after a validated snapshot. No write is ever replayed.
  */
 export class DesktopIpcClient extends EventEmitter {
-  constructor({ transportFactory, queueSender, timeoutMs = 5000, connectTimeoutMs = 15000,
+  constructor({ transportFactory, queueSender, hostId = 'local', allowExperimentalDurableControl = false,
+    allowExperimentalDurableInterrupt = false,
+    allowExperimentalDurableAdmission = false,
+    timeoutMs = 5000, connectTimeoutMs = 15000,
     snapshotTimeoutMs = Math.min(60000, timeoutMs * 3), snapshotRetryMs = Math.min(2000, timeoutMs), maxSnapshotAttempts = 3,
     maxFrameBytes = 256 * 1024 * 1024, maxInputBytes = 256 * 1024 } = {}) {
     super();
     if (typeof transportFactory !== 'function') throw failure('VERIFIED_TRANSPORT_REQUIRED', 'An authenticated Desktop pipe transport is required.');
+    if (!['local', 'durable'].includes(hostId)) throw new TypeError('Invalid hostId.');
+    if (typeof allowExperimentalDurableControl !== 'boolean') throw new TypeError('Invalid allowExperimentalDurableControl.');
+    if (typeof allowExperimentalDurableInterrupt !== 'boolean') throw new TypeError('Invalid allowExperimentalDurableInterrupt.');
+    if (typeof allowExperimentalDurableAdmission !== 'boolean') throw new TypeError('Invalid allowExperimentalDurableAdmission.');
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new TypeError('Invalid timeoutMs.');
     if (!Number.isSafeInteger(connectTimeoutMs) || connectTimeoutMs < 1 || connectTimeoutMs > 60000) throw new TypeError('Invalid connectTimeoutMs.');
     if (!Number.isSafeInteger(snapshotTimeoutMs) || snapshotTimeoutMs < 1 || snapshotTimeoutMs > 60000) throw new TypeError('Invalid snapshotTimeoutMs.');
@@ -127,6 +180,12 @@ export class DesktopIpcClient extends EventEmitter {
     if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 1024 || maxFrameBytes > 268435456) throw new TypeError('Invalid maxFrameBytes.');
     if (!Number.isSafeInteger(maxInputBytes) || maxInputBytes < 1 || maxInputBytes > 1024 * 1024) throw new TypeError('Invalid maxInputBytes.');
     this.options = { transportFactory, queueSender, timeoutMs, connectTimeoutMs, snapshotTimeoutMs, snapshotRetryMs, maxSnapshotAttempts, maxFrameBytes, maxInputBytes };
+    // Bind the host for the lifetime of this client, including reconnects. A
+    // queue sender or another mutable option must not change its destination.
+    this._hostId = hostId;
+    this._allowExperimentalDurableControl = allowExperimentalDurableControl;
+    this._allowExperimentalDurableInterrupt = allowExperimentalDurableInterrupt;
+    this._allowExperimentalDurableAdmission = allowExperimentalDurableAdmission;
     this._status = { phase: 'idle', ready: false };
     this._state = null; this._owner = null; this._revision = null;
     this._pending = new Map(); this._socket = null; this._clientId = null;
@@ -142,6 +201,7 @@ export class DesktopIpcClient extends EventEmitter {
   get status() { return { ...this._status }; }
   get revision() { return this._revision; }
   get threadId() { return this._threadId ?? null; }
+  get hostId() { return this._hostId; }
 
   _setStatus(phase, reason) {
     this._status = { phase, ready: phase === 'ready', ...(reason ? { reason } : {}) };
@@ -237,8 +297,36 @@ export class DesktopIpcClient extends EventEmitter {
   }
 
   _request(method, params, { write = false, target = null, timeoutMs = this.options.timeoutMs, signal } = {}) {
-    const version = VERSIONS[method];
-    if (version === undefined) return Promise.reject(failure('UNSUPPORTED_METHOD', 'Unsupported Desktop request.'));
+    const baseVersion = VERSIONS[method];
+    if (baseVersion === undefined) return Promise.reject(failure('UNSUPPORTED_METHOD', 'Unsupported Desktop request.'));
+    // A durable native turn can execute without entering its paired ChatGPT
+    // conversation history. Keep every native write off by default until that
+    // end-to-end behavior is supported; only dedicated experiments may opt in.
+    if (this.hostId === 'durable' && FOLLOWER_WRITES.has(method)) {
+      const interruptOnly = method === 'thread-follower-interrupt-turn' && this._allowExperimentalDurableInterrupt;
+      const admissionOnly = method === 'thread-follower-start-turn' && this._allowExperimentalDurableAdmission &&
+        params?.turnStart?.context?.useUserMessageAdmission === true;
+      if (!this._allowExperimentalDurableControl && !interruptOnly && !admissionOnly) {
+        return Promise.reject(failure('DURABLE_CONTROL_DISABLED', 'Cloud native controls are experimental and disabled for this connection.'));
+      }
+      if (this._closed || !this._status.ready || !this._owner) {
+        return Promise.reject(failure('NOT_READY', 'Wait for a current Desktop snapshot before sending.'));
+      }
+      if (target !== this._owner.clientId || params?.conversationId !== this._threadId ||
+        method === 'thread-follower-start-turn' && params.turnStart?.request?.threadId !== this._threadId) {
+        return Promise.reject(failure('INVALID_THREAD', 'Cloud controls must target the attached conversation and its current owner.'));
+      }
+      // Neither narrow opt-in can bypass payload or identity validation through
+      // _request; the broad experiment alone cannot authorize admission context.
+      try { validateDurableControl(method, params, { allowAdmission: this._allowExperimentalDurableAdmission,
+        state: this._state, threadId: this._threadId, ready: !this._closed && this._status.ready && !!this._owner });
+      } catch (error) { return Promise.reject(error); }
+      write = true;
+    }
+    // Desktop's generic follower protocol puts remote routing on the envelope
+    // and advances that method's version by one. Initialize stays unchanged.
+    const remoteFollower = this.hostId !== 'local' && method.startsWith('thread-follower-');
+    const version = baseVersion + (remoteFollower ? 1 : 0);
     if (signal?.aborted) return Promise.reject(failure('ABORTED', 'Desktop request was cancelled.'));
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
@@ -256,7 +344,7 @@ export class DesktopIpcClient extends EventEmitter {
       signal?.addEventListener('abort', abort, { once: true });
       try {
         this._write({ type: 'request', requestId, sourceClientId: this._clientId ?? 'initializing-client', version, method, params,
-          timeoutMs, ...(target ? { targetClientId: target } : {}) });
+          timeoutMs, ...(remoteFollower ? { hostId: this.hostId } : {}), ...(target ? { targetClientId: target } : {}) });
       } catch (error) {
         cleanup(); reject(error);
       }
@@ -267,7 +355,7 @@ export class DesktopIpcClient extends EventEmitter {
     if (!this._clientId || !this._owner) return;
     this._write({ type: 'broadcast', method: 'thread-stream-following-changed', version: 1,
       sourceClientId: this._clientId, targetClientIds: [this._owner.clientId],
-      params: { hostId: 'local', conversationId: this._threadId, following } });
+      params: { hostId: this.hostId, conversationId: this._threadId, following } });
   }
 
   async _discover() {
@@ -275,9 +363,16 @@ export class DesktopIpcClient extends EventEmitter {
     this._discovering = true;
     this._setStatus('discovering');
     try {
-      const response = await this._request('thread-owner-discovery', { hostId: 'local', conversationId: this._threadId });
+      // The packaged Desktop's owner-discovery handler is local-only. Its
+      // read-only generic settings request uses normal host-aware discovery and
+      // asserts actual ownership before answering; handledByClientId identifies
+      // that owner without claiming ownership or resuming the thread ourselves.
+      const response = this.hostId === 'local'
+        ? await this._request('thread-owner-discovery', { hostId: this.hostId, conversationId: this._threadId })
+        : await this._request('thread-follower-read-model-settings', { conversationId: this._threadId });
       if (!id(response.handledByClientId) || response.handledByClientId === this._clientId) throw failure('NO_OWNER', 'No existing Desktop owner was found.');
-      this._owner = { clientId: response.handledByClientId, supportsUntrustedAppInput: response.result?.supportsUntrustedAppInput === true };
+      this._owner = { clientId: response.handledByClientId,
+        supportsUntrustedAppInput: this.hostId === 'local' && response.result?.supportsUntrustedAppInput === true };
       this._resync();
     } finally { this._discovering = false; }
   }
@@ -319,7 +414,14 @@ export class DesktopIpcClient extends EventEmitter {
       if (message.resultType === 'success' && (message.method !== pending.method || pending.target && message.handledByClientId !== pending.target)) return;
       pending.cleanup();
       if (message.resultType === 'success') pending.resolve(message);
-      else pending.reject(failure('REMOTE_ERROR', pending.write ? 'Desktop did not confirm delivery. Check the conversation before retrying.' : 'Desktop could not handle this request.', pending.write));
+      else {
+        // Recognize only the protocol's exact missing-owner error. Never expose
+        // arbitrary upstream text, or weaken uncertain-delivery handling.
+        const missingOwner = message.resultType === 'error' && message.error === 'no-client-found';
+        pending.reject(failure(missingOwner ? 'NO_OWNER' : 'REMOTE_ERROR',
+          pending.write ? 'Desktop did not confirm delivery. Check the conversation before retrying.'
+            : missingOwner ? 'No existing Desktop owner was found.' : 'Desktop could not handle this request.', pending.write));
+      }
       return;
     }
     if (message.type === 'client-discovery-request') {
@@ -343,15 +445,17 @@ export class DesktopIpcClient extends EventEmitter {
       return;
     }
     if (message.method === 'thread-stream-following-status-requested' && message.version === 1 && this._owner && message.sourceClientId === this._owner.clientId) {
-      if (params?.conversationId === this._threadId && params.hostId === 'local') this._follow(true);
+      if (params?.conversationId === this._threadId && params.hostId === this.hostId) this._follow(true);
       return;
     }
-    if (message.method !== 'thread-stream-state-changed' || message.sourceClientId !== this._owner?.clientId || params?.conversationId !== this._threadId || params.hostId !== 'local') return;
+    if (message.method !== 'thread-stream-state-changed' || message.sourceClientId !== this._owner?.clientId || params?.conversationId !== this._threadId || params.hostId !== this.hostId) return;
+    if (this.hostId === 'durable' && !Array.isArray(message.targetClientIds)) return;
     if (message.version !== 11) throw failure('UNSUPPORTED_VERSION', 'Desktop stream protocol version is unsupported.');
     const change = params.change;
     if (!object(change) || !revision(change.revision)) throw failure('PROTOCOL_ERROR', 'Invalid Desktop stream revision.');
     if (change.type === 'snapshot') {
-      if (!object(change.conversationState) || change.conversationState.id !== this._threadId || !Array.isArray(change.conversationState.turns)) throw failure('PROTOCOL_ERROR', 'Desktop snapshot belongs to a different or invalid conversation.');
+      if (!object(change.conversationState) || change.conversationState.id !== this._threadId ||
+        (change.conversationState.hostId ?? 'local') !== this.hostId || !Array.isArray(change.conversationState.turns)) throw failure('PROTOCOL_ERROR', 'Desktop snapshot belongs to a different or invalid conversation.');
       if (this._revision !== null && change.revision < this._revision) return;
       this._state = change.conversationState; this._revision = change.revision;
       this._clearSnapshotTimers();
@@ -366,7 +470,7 @@ export class DesktopIpcClient extends EventEmitter {
     if (change.baseRevision !== this._revision || change.revision !== change.baseRevision + 1) { this._resync(); return; }
     try {
       const updated = applyDesktopPatches(this._state, change.patches);
-      if (updated.id !== this._threadId || !Array.isArray(updated.turns)) throw failure('INVALID_PATCH', 'Invalid conversation state.');
+      if (updated.id !== this._threadId || (updated.hostId ?? 'local') !== this.hostId || !Array.isArray(updated.turns)) throw failure('INVALID_PATCH', 'Invalid conversation state.');
       this._state = updated; this._revision = change.revision;
     } catch { this._resync(); return; }
     this.emit('state', this._state, { revision: this._revision, acceptedTextChanges: Array.isArray(change.acceptedTextChanges) ? change.acceptedTextChanges : [] });
@@ -377,7 +481,7 @@ export class DesktopIpcClient extends EventEmitter {
     if (!['steer', 'queue'].includes(mode)) throw failure('INVALID_MODE', 'Choose steer or queue.');
     if (!this._status.ready || !this._owner) throw failure('NOT_READY', 'Wait for a current Desktop snapshot before sending.');
     if (this._sending) throw failure('SEND_IN_PROGRESS', 'Wait for the previous delivery result.');
-    if (mode === 'queue' && typeof this.options.queueSender !== 'function') throw failure('UNSUPPORTED_QUEUE', 'This connection has no safe queue append implementation.');
+    if (mode === 'queue' && (this.hostId !== 'local' || typeof this.options.queueSender !== 'function')) throw failure('UNSUPPORTED_QUEUE', 'This connection has no safe queue append implementation.');
     const messageId = randomUUID(), owner = this._owner.clientId;
     this._sending = true;
     try {
@@ -410,10 +514,17 @@ export class DesktopIpcClient extends EventEmitter {
   async requestFollower(method, params) {
     if (!FOLLOWER_WRITES.has(method)) throw failure('UNSUPPORTED_METHOD', 'Unsupported Desktop follower control.');
     if (!object(params) || params.conversationId !== this._threadId ||
-      params.hostId !== undefined && params.hostId !== 'local' ||
+      params.hostId !== undefined && params.hostId !== this.hostId ||
       method === 'thread-follower-start-turn' && params.turnStart?.request?.threadId !== this._threadId) {
       throw failure('INVALID_THREAD', 'The request must target the attached conversation.');
     }
+    if (this.hostId !== 'local' && params.hostId !== undefined) {
+      throw failure('INVALID_THREAD', 'Remote routing belongs to the connection, not the follower parameters.');
+    }
+    if (this.hostId === 'durable') validateDurableControl(method, params, {
+      allowAdmission: this._allowExperimentalDurableAdmission, state: this._state, threadId: this._threadId,
+      ready: !this._closed && this._status.ready && !!this._owner,
+    });
     if (this._closed || !this._status.ready || !this._owner) throw failure('NOT_READY', 'Wait for a current Desktop snapshot before sending.');
     return this._request(method, params, { target: this._owner.clientId, write: true });
   }

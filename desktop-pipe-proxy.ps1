@@ -1,4 +1,9 @@
 #requires -Version 7.4
+param(
+    [ValidateNotNullOrEmpty()]
+    [ValidatePattern('\A(?:codex-ipc|codex-app-tools-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\z')]
+    [string]$PipeName = 'codex-ipc'
+)
 # Private binary transport: stdout must contain only framed Desktop IPC bytes.
 $ErrorActionPreference = 'Stop'
 try {
@@ -78,10 +83,10 @@ public static class CstVerifiedPipe {
             }
         } finally { pinned.Free(); }
     }
-    public static async Task Run(string[] allowed) {
+    public static async Task Run(string[] allowed, string pipeName) {
         // A same-name hostile server must not be able to impersonate this user
         // while we are still establishing and verifying the connection.
-        using (var pipe = new NamedPipeClientStream(".", "codex-ipc", PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification)) {
+        using (var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification)) {
             await pipe.ConnectAsync(8000);
             Verify(pipe, allowed); // Same handle used for verification and all subsequent traffic.
             Console.Error.WriteLine("CST_PIPE_VERIFIED");
@@ -94,7 +99,7 @@ public static class CstVerifiedPipe {
     }
 }
 '@
-    [void][CstVerifiedPipe]::Run([string[]]$allowed).GetAwaiter().GetResult()
+    [void][CstVerifiedPipe]::Run([string[]]$allowed, $PipeName).GetAwaiter().GetResult()
 } catch {
     [Console]::Error.WriteLine('Codex Session to Terminal Desktop connection failed: ' + $_.Exception.Message)
     exit 1

@@ -1,9 +1,10 @@
-import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { createInterface } from 'node:readline';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createTrayLease } from './cst-terminal.mjs';
 import { createSessionPresence } from './cst-presence.mjs';
+import { createDesktopButtonAction } from './desktop-button-action.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -83,6 +84,18 @@ export function shouldWaitOnError(error, interactive, check) {
   return interactive && !check && !['TRAY_STOPPED', 'ABORTED'].includes(error?.code);
 }
 
+// Preserve the launcher's existing child lifecycle while the original CLI is
+// hosted below a one-row toolbar. The host alone owns its ConPTY and terminal.
+export function createTerminalViewChild(launch, { runView, onOpenDesktop, input = process.stdin, output = process.stdout }) {
+  const child = new EventEmitter(), lifetime = new AbortController();
+  child.kill = () => { lifetime.abort(); return true; };
+  Promise.resolve().then(() => runView(launch, { mode: 'local', input, output,
+    signal: lifetime.signal, onOpenDesktop })).then(
+    code => child.emit('exit', code, null),
+    () => child.emit('error', failure('CLI_START_FAILED')));
+  return child;
+}
+
 async function waitForDismissal(locale) {
   try { process.stdin.setRawMode?.(false); } catch {}
   const input = createInterface({ input: process.stdin, output: process.stderr });
@@ -99,7 +112,10 @@ export async function runNativeTerminal(options, {
   createBridge = async args => (await import('./native-cli-bridge.mjs')).createNativeCliBridge(args),
   lease = createTrayLease(options.controlDirectory),
   createPresence = createSessionPresence,
-  spawnFn = spawn,
+  spawnFn,
+  runView = async (launch, settings) => (await import('./terminal-session-view.mjs')).runTerminalSessionView(launch, settings),
+  createButtonAction = createDesktopButtonAction,
+  input = process.stdin, output = process.stdout,
   environment = process.env,
   processEvents = process,
   signal,
@@ -112,7 +128,7 @@ export async function runNativeTerminal(options, {
   if (signal?.aborted) throw failure('ABORTED');
   const abort = new AbortController();
   const presence = createPresence({ controlDirectory: options.controlDirectory, threadId: options.threadId });
-  let bridge, child, childDone, childExited = false, closed = false, timer, stopError, closePromise;
+  let bridge, child, childDone, buttonAction, childExited = false, closed = false, timer, stopError, closePromise;
   let initializing = true, initialStatusError;
   let rejectStopped;
   const stopped = new Promise((_, reject) => { rejectStopped = reject; });
@@ -146,7 +162,7 @@ export async function runNativeTerminal(options, {
     closePromise = (async () => {
       // Revoke the local endpoint before waiting for the owned CLI to exit.
       try { await bridge?.close(); }
-      finally { try { await closeChild(); } finally { await presence.close(); } }
+      finally { try { await closeChild(); } finally { try { await buttonAction?.close(); } finally { await presence.close(); } } }
     })();
     return closePromise;
   };
@@ -191,7 +207,9 @@ export async function runNativeTerminal(options, {
     presence.updateStatus(bridge.status);
     if (options.check) return 0;
     const launch = nativeCliLaunch(options, bridge, environment);
-    try { child = spawnFn(launch.executable, launch.args, launch.options); }
+    buttonAction = createButtonAction({ ...options, hostId: 'local' }, { signal: abort.signal });
+    try { child = spawnFn ? spawnFn(launch.executable, launch.args, launch.options)
+      : createTerminalViewChild(launch, { runView, input, output, onOpenDesktop: () => buttonAction.open() }); }
     catch { throw failure('CLI_START_FAILED'); }
     childDone = new Promise((resolve, reject) => {
       child.once('error', () => { childExited = true; reject(failure('CLI_START_FAILED')); });
@@ -225,4 +243,6 @@ export async function main(args = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  await main(); process.exit(process.exitCode ?? 0);
+}

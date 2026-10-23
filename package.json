@@ -23,7 +23,9 @@
   },
   "dependencies": {
     "@openai/codex": "0.163.0-alpha.10.2",
+    "@xterm/headless": "6.0.0",
     "ajv": "8.17.1",
+    "node-pty": "1.1.0",
     "ws": "8.22.0"
   },
   "license": "MIT"

@@ -35,9 +35,10 @@ async function until(predicate) {
   throw new Error('Fixture condition timed out');
 }
 async function fixture(t, options = {}) {
+  const hostId = options.clientOptions?.hostId ?? 'local';
   const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\cst-test-${randomUUID()}` : path.join(os.tmpdir(), `cst-${randomUUID()}.sock`);
   const sockets = new Set(), messages = [], controls = [];
-  const result = { messages, controls, historyLoads: [], conversation: options.conversation ?? state(), revision: 1, owner: ownerId, follows: 0, dropSnapshots: options.dropSnapshots ?? 0 };
+  const result = { messages, controls, historyLoads: [], conversation: options.conversation ?? { ...state(), hostId }, revision: 1, owner: ownerId, follows: 0, dropSnapshots: options.dropSnapshots ?? 0 };
   const server = net.createServer(socket => {
     sockets.add(socket); result.socket = socket;
     socket.on('error', () => {}); socket.on('close', () => sockets.delete(socket));
@@ -50,6 +51,10 @@ async function fixture(t, options = {}) {
         if (request.type === 'request') {
           if (request.method === 'initialize') result.reply(request, { clientId }, clientId);
           else if (request.method === 'thread-owner-discovery') result.reply(request, { supportsUntrustedAppInput: true }, result.owner);
+          else if (request.method === 'thread-follower-read-model-settings') {
+            if (options.onReadSettings) options.onReadSettings(request, result);
+            else result.reply(request, { settings: { model: 'fixture-model' }, supportsUntrustedAppInput: true }, result.owner);
+          }
           else if (request.method === 'thread-follower-load-complete-history') {
             result.historyLoads.push(request);
             options.onHistoryLoad?.(request, result);
@@ -70,7 +75,7 @@ async function fixture(t, options = {}) {
   });
   result.reply = (request, response, handledByClientId) => result.socket.write(frame({ type: 'response', requestId: request.requestId, resultType: 'success', method: request.method, handledByClientId, result: response }));
   result.broadcast = (method, params, { source = result.owner, version = 11, target = clientId } = {}) => result.socket.write(frame({ type: 'broadcast', method, version, sourceClientId: source, targetClientIds: [target], params }));
-  result.change = (change, extra) => result.broadcast('thread-stream-state-changed', { hostId: 'local', conversationId: threadId, change }, extra);
+  result.change = (change, extra) => result.broadcast('thread-stream-state-changed', { hostId, conversationId: threadId, change }, extra);
   result.snapshot = () => result.change({ type: 'snapshot', revision: result.revision, conversationState: result.conversation });
   result.patch = (patches, extra = {}) => result.change({ type: 'patches', baseRevision: result.revision, revision: ++result.revision, patches, ...extra });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(endpoint, resolve); });
@@ -116,6 +121,341 @@ test('requires a verified transport and validates bounds', () => {
   for (const option of ['snapshotTimeoutMs', 'snapshotRetryMs', 'maxSnapshotAttempts']) {
     assert.throws(() => new DesktopIpcClient({ transportFactory() {}, [option]: 0 }), new RegExp(option));
   }
+  for (const hostId of ['', 'other', null, 1]) assert.throws(() => new DesktopIpcClient({ transportFactory() {}, hostId }), /hostId/);
+  for (const allowExperimentalDurableControl of [null, 0, 1, 'true', {}, []]) assert.throws(
+    () => new DesktopIpcClient({ transportFactory() {}, allowExperimentalDurableControl }), /allowExperimentalDurableControl/);
+  for (const allowExperimentalDurableInterrupt of [null, 0, 1, 'true', {}, []]) assert.throws(
+    () => new DesktopIpcClient({ transportFactory() {}, allowExperimentalDurableInterrupt }), /allowExperimentalDurableInterrupt/);
+  for (const allowExperimentalDurableAdmission of [null, 0, 1, 'true', {}, []]) assert.throws(
+    () => new DesktopIpcClient({ transportFactory() {}, allowExperimentalDurableAdmission }), /allowExperimentalDurableAdmission/);
+  assert.equal(new DesktopIpcClient({ transportFactory() {} }).hostId, 'local');
+});
+
+test('durable discovery reads settings with its own identity then follows only the actual owner', async t => {
+  const f = await fixture(t, { clientOptions: { hostId: 'durable' } });
+  await f.client.connect(threadId);
+  assert.equal(f.client.hostId, 'durable'); assert.equal(f.client.status.ready, true);
+  assert.deepEqual(f.client.state, f.conversation);
+  assert.deepEqual(f.client.owner, { clientId: ownerId, supportsUntrustedAppInput: false });
+  const [initialize, discover, following] = f.messages;
+  assert.equal(initialize.method, 'initialize'); assert.equal(initialize.version, 0); assert(!own(initialize, 'hostId'));
+  assert.equal(discover.method, 'thread-follower-read-model-settings'); assert.equal(discover.version, 2);
+  assert.equal(discover.sourceClientId, clientId); assert.equal(discover.hostId, 'durable'); assert(!own(discover, 'targetClientId'));
+  assert.deepEqual(discover.params, { conversationId: threadId });
+  assert.equal(following.version, 1); assert.deepEqual(following.targetClientIds, [ownerId]);
+  assert.deepEqual(following.params, { hostId: 'durable', conversationId: threadId, following: true });
+  assert(!f.messages.some(message => /owner-discovery|resume|start-turn/.test(message.method)));
+  f.client.close(); await tick();
+  assert.deepEqual(f.messages.at(-1).params, { hostId: 'durable', conversationId: threadId, following: false });
+});
+
+test('durable discovery refuses missing or self owner identities without following', async t => {
+  for (const invalidOwner of [undefined, '', clientId]) {
+    const f = await fixture(t, { clientOptions: { hostId: 'durable' }, onReadSettings(request, server) {
+      server.reply(request, { settings: {} }, invalidOwner);
+    } });
+    await assert.rejects(f.client.connect(threadId), { code: 'NO_OWNER' });
+    assert.equal(f.follows, 0); assert.equal(f.client.owner, null);
+  }
+});
+
+test('exact no-client-found discovery error becomes NO_OWNER without following or exposing upstream text', async t => {
+  for (const upstream of ['no-client-found', 'no-client-found: private details', 'NO-CLIENT-FOUND', { code: 'no-client-found' }, 'private provider error']) {
+    const f = await fixture(t, { clientOptions: { hostId: 'durable' }, onReadSettings(request, server) {
+      server.socket.write(frame({ type: 'response', requestId: request.requestId, resultType: 'error', error: upstream }));
+    } });
+    const exact = upstream === 'no-client-found', code = exact ? 'NO_OWNER' : 'REMOTE_ERROR';
+    await assert.rejects(f.client.connect(threadId), error => {
+      assert.equal(error.code, code);
+      assert.equal(error.message, exact ? 'No existing Desktop owner was found.' : 'Desktop could not handle this request.');
+      return true;
+    });
+    assert.equal(f.client.status.reason, code);
+    assert.equal(f.follows, 0);assert.equal(f.controls.length, 0);assert.equal(f.client.owner, null);
+  }
+});
+
+test('missing-owner response to a write retains uncertain delivery and does not retry', async t => {
+  const f = await fixture(t, { dropWrites: true });await f.client.connect(threadId);
+  const sending = f.client.send('fixture message');
+  const rejected = assert.rejects(sending, error => {
+    assert.equal(error.code, 'NO_OWNER');assert.equal(error.outcomeUnknown, true);
+    assert.match(error.message, /did not confirm delivery/);return true;
+  });
+  await until(() => f.controls.length === 1);
+  const request = f.controls[0];
+  f.socket.write(frame({ type: 'response', requestId: request.requestId, resultType: 'error', error: 'no-client-found' }));
+  await rejected;await tick();assert.equal(f.controls.length, 1);
+});
+
+test('a null settings discovery result does not fabricate settings or prevent read-only following', async t => {
+  const f = await fixture(t, { clientOptions: { hostId: 'durable' }, onReadSettings(request, server) {
+    server.reply(request, { settings: null }, server.owner);
+  } });
+  await f.client.connect(threadId);
+  assert.equal(f.client.status.ready, true); assert.equal(f.client.state.latestThreadSettings, undefined);
+  assert.equal(f.client.owner.supportsUntrustedAppInput, false);
+  assert.equal(f.controls.length, 0);
+});
+
+test('durable state and follow refreshes reject another host, thread, source or destination', async t => {
+  const f = await fixture(t, { clientOptions: { hostId: 'durable' } }); await f.client.connect(threadId);
+  const change = { type: 'patches', baseRevision: 1, revision: 2,
+    patches: [{ op: 'replace', path: ['turns', 0, 'items', 0, 'text'], value: 'foreign text' }] };
+  f.broadcast('thread-stream-state-changed', { hostId: 'local', conversationId: threadId, change });
+  f.broadcast('thread-stream-state-changed', { hostId: 'durable', conversationId: 'other-thread', change });
+  f.socket.write(frame({ type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: ownerId,
+    params: { hostId: 'durable', conversationId: threadId, change } }));
+  f.change(change, { source: 'other-owner' }); f.change(change, { target: 'other-client' });
+  f.broadcast('thread-stream-following-status-requested', { hostId: 'local', conversationId: threadId }, { version: 1 });
+  f.broadcast('thread-stream-following-status-requested', { hostId: 'durable', conversationId: threadId }, { version: 1, source: 'other-owner' });
+  await tick(); assert.equal(f.client.revision, 1); assert.equal(f.client.state.turns[0].items[0].text, 'hello'); assert.equal(f.follows, 1);
+  f.patch(change.patches); await until(() => f.client.revision === 2);
+  assert.equal(f.client.state.turns[0].items[0].text, 'foreign text');
+  f.broadcast('thread-stream-following-status-requested', { hostId: 'durable', conversationId: threadId }, { version: 1 });
+  await until(() => f.follows === 2);
+});
+
+test('a durable snapshot must carry the bound host and cannot replace it by a patch', async t => {
+  for (const hostId of [undefined, 'local']) {
+    const f = await fixture(t, { conversation: { ...state(), ...(hostId ? { hostId } : {}) }, clientOptions: { hostId: 'durable' } });
+    await assert.rejects(f.client.connect(threadId), { code: 'PROTOCOL_ERROR' });
+    assert.equal(f.client.state, null);
+  }
+  const f = await fixture(t, { clientOptions: { hostId: 'durable' } }); await f.client.connect(threadId);
+  f.change({ type: 'patches', baseRevision: 1, revision: 2, patches: [{ op: 'replace', path: ['hostId'], value: 'local' }] });
+  await until(() => f.follows === 2 && f.client.status.ready);
+  assert.equal(f.client.state.hostId, 'durable');
+  assert.equal(f.client.revision, 1);
+});
+
+test('durable controls route on the envelope and use incremented versions without replay', async t => {
+  const f = await fixture(t, { clientOptions: { hostId: 'durable', allowExperimentalDurableControl: true } }); await f.client.connect(threadId);
+  for (const [method, version] of [['thread-follower-start-turn', 3], ['thread-follower-steer-turn', 2], ['thread-follower-interrupt-turn', 5]]) {
+    const params = durableControl(method);
+    const response = await f.client.requestFollower(method, params);
+    assert.equal(response.method, method); assert.equal(response.resultType, 'success');
+    const request = f.controls.at(-1);
+    assert.equal(request.version, version); assert.equal(request.hostId, 'durable');
+    assert.equal(request.sourceClientId, clientId); assert.equal(request.targetClientId, ownerId);
+    assert.deepEqual(request.params, params); assert(!own(request.params, 'hostId'));
+  }
+  for (const hostId of ['local', 'durable', 'other']) await assert.rejects(
+    f.client.requestFollower('thread-follower-steer-turn', { conversationId: threadId, hostId }), { code: 'INVALID_THREAD' });
+  await assert.rejects(f.client.requestFollower('thread-follower-start-turn', { conversationId: threadId, turnStart: { request: { threadId: 'other' } } }), { code: 'INVALID_THREAD' });
+  assert.equal(f.controls.length, 3);
+});
+
+function durableControl(method) {
+  const input = [{ type: 'text', text: 'fixture text', text_elements: [] }];
+  return { conversationId: threadId, ...(method === 'thread-follower-start-turn'
+    ? { turnStart: { request: { threadId, input }, context: { inheritThreadSettings: true } } }
+    : method === 'thread-follower-steer-turn' ? { input, attachments: [] }
+      : { mode: 'user-stop', expectedTurnId: 'turn-1' }) };
+}
+
+test('durable native writes are disabled by default across every control entry point', async t => {
+  for (const clientOptions of [{ hostId: 'durable' }, { hostId: 'durable', allowExperimentalDurableControl: false }]) {
+    const f = await fixture(t, { clientOptions }); await f.client.connect(threadId);
+    const expected = { code: 'DURABLE_CONTROL_DISABLED', outcomeUnknown: false };
+    await assert.rejects(f.client.send('do not send'), expected);
+    for (const method of ['thread-follower-start-turn', 'thread-follower-steer-turn', 'thread-follower-interrupt-turn']) {
+      await assert.rejects(f.client.requestFollower(method, durableControl(method)), expected);
+      // The low-level gate keys off the method, not a caller's write flag.
+      await assert.rejects(f.client._request(method, durableControl(method), { target: ownerId, write: false }), expected);
+    }
+    assert.equal(f.controls.length, 0); assert.equal(f.client._pending.size, 0); assert.equal(f.client._sending, false);
+    assert.equal(f.client.status.ready, true);
+  }
+});
+
+test('narrow durable interrupt opt-in cannot authorize start or steer through any entry point', async t => {
+  const f = await fixture(t, { clientOptions: { hostId: 'durable', allowExperimentalDurableInterrupt: true } });
+  await f.client.connect(threadId);
+  const expected = { code: 'DURABLE_CONTROL_DISABLED', outcomeUnknown: false };
+  await assert.rejects(f.client.send('do not send'), expected);
+  for (const method of ['thread-follower-start-turn', 'thread-follower-steer-turn']) {
+    await assert.rejects(f.client.requestFollower(method, durableControl(method)), expected);
+    await assert.rejects(f.client._request(method, durableControl(method), { target: ownerId, write: false }), expected);
+  }
+  const method = 'thread-follower-interrupt-turn', params = durableControl(method);
+  const response = await f.client.requestFollower(method, params);
+  assert.deepEqual(response.result, { ok: true, interruptedTurnId: 'turn-1' });
+  assert.equal(f.controls.length, 1);
+  assert.equal(f.controls[0].method, method); assert.equal(f.controls[0].hostId, 'durable');
+  assert.equal(f.controls[0].version, 5); assert.equal(f.controls[0].targetClientId, ownerId);
+  assert.deepEqual(f.controls[0].params, params);
+});
+
+test('narrow durable interrupt opt-in still requires a pinned user-stop payload at the low-level gate', async t => {
+  const f = await fixture(t, { clientOptions: { hostId: 'durable', allowExperimentalDurableInterrupt: true } });
+  await f.client.connect(threadId);
+  const method = 'thread-follower-interrupt-turn';
+  for (const params of [
+    { conversationId: threadId, mode: 'user-stop' },
+    { conversationId: threadId, mode: 'system', expectedTurnId: 'turn-1' },
+    { conversationId: threadId, mode: 'user-stop', expectedTurnId: '' },
+    { ...durableControl(method), stopOtherTurns: true },
+  ]) {
+    await assert.rejects(f.client.requestFollower(method, params), { code: 'UNSUPPORTED_INPUT' });
+    await assert.rejects(f.client._request(method, params, { target: ownerId, write: false }), { code: 'UNSUPPORTED_INPUT' });
+  }
+  assert.equal(f.controls.length, 0); assert.equal(f.client._pending.size, 0);
+});
+
+function admissionState() {
+  return { ...state(), hostId: 'durable', mode: 'default', threadStartKind: 'default', threadSource: 'user' };
+}
+function admissionControl() {
+  const params = durableControl('thread-follower-start-turn');
+  params.turnStart.request.clientUserMessageId = 'supplied-message-id';
+  params.turnStart.context = { ...params.turnStart.context, useUserMessageAdmission: true,
+    restoreMessage: { id: 'supplied-message-id', cwd: 'C:\\fixture' } };
+  return params;
+}
+
+test('narrow durable admission opt-in transmits only the explicit default/user candidate unchanged', async t => {
+  const f = await fixture(t, { conversation: admissionState(), clientOptions: { hostId: 'durable', allowExperimentalDurableAdmission: true } });
+  await f.client.connect(threadId);
+  const before = structuredClone(f.client.state), params = admissionControl();
+  await f.client.requestFollower('thread-follower-start-turn', params);
+  assert.equal(f.controls.length, 1); assert.equal(f.controls[0].version, 3);
+  assert.equal(f.controls[0].targetClientId, ownerId); assert.equal(f.controls[0].hostId, 'durable');
+  assert.deepEqual(f.controls[0].params, params); assert.deepEqual(f.client.state, before);
+  const expected = { code: 'DURABLE_CONTROL_DISABLED', outcomeUnknown: false };
+  await assert.rejects(f.client.send('not an admission request'), expected);
+  for (const method of ['thread-follower-start-turn', 'thread-follower-steer-turn', 'thread-follower-interrupt-turn']) {
+    await assert.rejects(f.client.requestFollower(method, durableControl(method)), expected);
+    await assert.rejects(f.client._request(method, durableControl(method), { target: ownerId, write: false }), expected);
+  }
+  assert.equal(f.controls.length, 1);
+});
+
+test('admission context stays off by default and cannot be enabled by broad control or interrupt opt-in', async t => {
+  for (const flags of [{}, { allowExperimentalDurableControl: true }, { allowExperimentalDurableInterrupt: true },
+    { allowExperimentalDurableControl: true, allowExperimentalDurableAdmission: false }]) {
+    const f = await fixture(t, { conversation: admissionState(), clientOptions: { hostId: 'durable', ...flags } });
+    await f.client.connect(threadId);
+    await assert.rejects(f.client.requestFollower('thread-follower-start-turn', admissionControl()));
+    await assert.rejects(f.client._request('thread-follower-start-turn', admissionControl(), { target: ownerId, write: false }));
+    assert.equal(f.controls.length, 0); assert.equal(f.client._pending.size, 0);
+  }
+});
+
+test('admission requires supplied matching client identity, explicit true and inherited settings', async t => {
+  const f = await fixture(t, { conversation: admissionState(), clientOptions: { hostId: 'durable', allowExperimentalDurableAdmission: true } });
+  await f.client.connect(threadId);
+  const changes = [
+    ...[undefined, null, '', ' ', 1, 'x'.repeat(257)].map(value => params => { params.turnStart.request.clientUserMessageId = value; }),
+    params => { delete params.turnStart.context.restoreMessage; },
+    params => { params.turnStart.context.restoreMessage.id = 'other-message'; },
+    params => { params.turnStart.context.useUserMessageAdmission = false; },
+    params => { params.turnStart.context.useUserMessageAdmission = 'true'; },
+    params => { params.turnStart.context.inheritThreadSettings = false; },
+    params => { params.turnStart.context.aeonInitialization = {}; },
+    params => { params.turnStart.context.messageThreadId = 'invented'; },
+    params => { params.turnStart.request.threadStartKind = 'aeon'; },
+    params => { params.turnStart.request.model = 'invented'; },
+    params => { params.turnStart.request.input = [{ type: 'image', url: 'fixture' }]; },
+  ];
+  for (const change of changes) {
+    const params = admissionControl(); change(params);
+    await assert.rejects(f.client.requestFollower('thread-follower-start-turn', params));
+    await assert.rejects(f.client._request('thread-follower-start-turn', params, { target: ownerId, write: false }));
+  }
+  assert.equal(f.controls.length, 0); assert.equal(f.client._pending.size, 0);
+});
+
+test('admission cannot relabel missing, aeon or non-user runtime state', async t => {
+  for (const [key, value] of [['mode', 'durable'], ['mode', undefined], ['threadStartKind', 'aeon'],
+    ['threadStartKind', undefined], ['threadSource', 'aeon'], ['threadSource', undefined]]) {
+    const conversation = admissionState(); conversation[key] = value;
+    const f = await fixture(t, { conversation, clientOptions: { hostId: 'durable', allowExperimentalDurableAdmission: true } });
+    await f.client.connect(threadId);
+    const before = structuredClone(f.client.state);
+    const expected = { code: 'DURABLE_ADMISSION_UNAVAILABLE', outcomeUnknown: false };
+    await assert.rejects(f.client.requestFollower('thread-follower-start-turn', admissionControl()), expected);
+    await assert.rejects(f.client._request('thread-follower-start-turn', admissionControl(), { target: ownerId }), expected);
+    assert.equal(f.controls.length, 0); assert.deepEqual(f.client.state, before);
+  }
+});
+
+test('narrow control low-level calls remain bound to the current owner and thread', async t => {
+  const f = await fixture(t, { conversation: admissionState(), clientOptions: { hostId: 'durable',
+    allowExperimentalDurableAdmission: true, allowExperimentalDurableInterrupt: true } });
+  await f.client.connect(threadId);
+  for (const [method, params] of [['thread-follower-start-turn', admissionControl()],
+    ['thread-follower-interrupt-turn', durableControl('thread-follower-interrupt-turn')]]) {
+    await assert.rejects(f.client._request(method, params), { code: 'INVALID_THREAD' });
+    await assert.rejects(f.client._request(method, params, { target: 'other-owner' }), { code: 'INVALID_THREAD' });
+    await assert.rejects(f.client._request(method, { ...params, conversationId: 'other-thread' }, { target: ownerId }), { code: 'INVALID_THREAD' });
+  }
+  assert.equal(f.controls.length, 0);
+});
+
+test('admission timeout is an uncertain write even if the low-level caller supplies write false', async t => {
+  const f = await fixture(t, { conversation: admissionState(), dropWrites: true, clientOptions: {
+    hostId: 'durable', allowExperimentalDurableAdmission: true, timeoutMs: 60,
+  } });
+  await f.client.connect(threadId);
+  await assert.rejects(f.client._request('thread-follower-start-turn', admissionControl(), { target: ownerId, write: false }), {
+    code: 'REQUEST_TIMEOUT', outcomeUnknown: true,
+  });
+  assert.equal(f.controls.length, 1);
+});
+
+test('durable controls reject app context, attachments, settings overrides and unbound interruption before transmission', async t => {
+  const f = await fixture(t, { clientOptions: { hostId: 'durable' } }); await f.client.connect(threadId);
+  for (const key of ['responseItems', 'mcpAppModelContextAttachments', 'untrustedAppMessage']) {
+    const params = durableControl('thread-follower-start-turn');
+    params.turnStart.context[key] = [];
+    await assert.rejects(f.client.requestFollower('thread-follower-start-turn', params), { code: 'UNSUPPORTED_INPUT' });
+  }
+  const overridden = durableControl('thread-follower-start-turn'); overridden.turnStart.request.approvalPolicy = 'never';
+  await assert.rejects(f.client.requestFollower('thread-follower-start-turn', overridden), { code: 'UNSUPPORTED_INPUT' });
+  const noInheritance = durableControl('thread-follower-start-turn'); noInheritance.turnStart.context.inheritThreadSettings = false;
+  await assert.rejects(f.client.requestFollower('thread-follower-start-turn', noInheritance), { code: 'UNSUPPORTED_INPUT' });
+  const toolOutput = { ...durableControl('thread-follower-steer-turn'), toolOutput: [] };
+  await assert.rejects(f.client.requestFollower('thread-follower-steer-turn', toolOutput), { code: 'UNSUPPORTED_INPUT' });
+  const attachments = { ...durableControl('thread-follower-steer-turn'), attachments: [{ type: 'image' }] };
+  await assert.rejects(f.client.requestFollower('thread-follower-steer-turn', attachments), { code: 'UNSUPPORTED_INPUT' });
+  const imageInput = { ...durableControl('thread-follower-steer-turn'), input: [{ type: 'image', url: 'fixture' }] };
+  await assert.rejects(f.client.requestFollower('thread-follower-steer-turn', imageInput), { code: 'UNSUPPORTED_INPUT' });
+  await assert.rejects(f.client.requestFollower('thread-follower-interrupt-turn', { conversationId: threadId, mode: 'user-stop' }), { code: 'UNSUPPORTED_INPUT' });
+  assert.equal(f.controls.length, 0);
+});
+
+test('durable control responses from another handler cannot confirm a write and never cause a replay', async t => {
+  const f = await fixture(t, { dropWrites: true, clientOptions: { hostId: 'durable', allowExperimentalDurableControl: true, timeoutMs: 60 } }); await f.client.connect(threadId);
+  const pending = f.client.requestFollower('thread-follower-start-turn', durableControl('thread-follower-start-turn'));
+  const rejected = assert.rejects(pending, { code: 'REQUEST_TIMEOUT', outcomeUnknown: true });
+  await until(() => f.controls.length === 1);
+  f.reply(f.controls[0], { result: { turn: { id: 'foreign-turn' } } }, 'foreign-owner');
+  await rejected; assert.equal(f.controls.length, 1);
+});
+
+test('durable convenience sends inherit settings but never invoke a local queue sender', async t => {
+  const queued = [];
+  const f = await fixture(t, { clientOptions: { hostId: 'durable', allowExperimentalDurableControl: true, queueSender: request => queued.push(request) } });
+  await f.client.connect(threadId);
+  const sent = await f.client.send('cloud text');
+  assert.equal(sent.action, 'start'); assert.equal(f.controls[0].version, 3); assert.equal(f.controls[0].hostId, 'durable');
+  assert.equal(f.controls[0].params.turnStart.context.inheritThreadSettings, true);
+  await assert.rejects(f.client.send('queued', { mode: 'queue' }), { code: 'UNSUPPORTED_QUEUE' });
+  assert.deepEqual(queued, []); assert.equal(f.controls.length, 1);
+});
+
+test('durable history loads through its bound owner and host with version two', async t => {
+  const f = await fixture(t, { conversation: { ...canonicalState({ partial: true }), hostId: 'durable' },
+    clientOptions: { hostId: 'durable' }, onHistoryLoad(request, server) {
+      server.conversation = { ...canonicalState(), hostId: 'durable' }; server.revision = 2; server.snapshot();
+      server.reply(request, { revision: 2 }, server.owner);
+    } });
+  await f.client.connect(threadId); await f.client.ensureCompleteHistory({ timeoutMs: 300 });
+  assert.equal(f.historyLoads.length, 1); assert.equal(f.historyLoads[0].version, 2);
+  assert.equal(f.historyLoads[0].hostId, 'durable'); assert.equal(f.historyLoads[0].targetClientId, ownerId);
+  assert.deepEqual(f.historyLoads[0].params, { conversationId: threadId });
+  assert.equal(f.client.state.hostId, 'durable');
 });
 
 test('the default admits the observed large history header up to the Desktop protocol cap without allocating its payload', t => {

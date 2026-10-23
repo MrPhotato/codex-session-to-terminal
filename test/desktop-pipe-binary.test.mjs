@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function powershell() {
   const located = spawnSync('where.exe', ['pwsh.exe'], { windowsHide: true, encoding: 'utf8' }).stdout?.trim().split(/\r?\n/) ?? [];
@@ -13,6 +14,19 @@ function powershell() {
     path.join(os.homedir(), '.cache', 'codex-runtimes', 'codex-primary-runtime', 'dependencies', 'native', 'powershell', 'pwsh.exe'),
   ].find(value => value && path.isAbsolute(value) && existsSync(value));
 }
+
+test('Windows pipe helper rejects arbitrary or command-shaped names before opening a pipe', { skip: process.platform !== 'win32' }, () => {
+  const executable = powershell();
+  assert(executable, 'PowerShell 7 is required for pipe parameter validation.');
+  const script = fileURLToPath(new URL('../desktop-pipe-proxy.ps1', import.meta.url));
+  for (const pipeName of ['unrelated-pipe', 'codex-app-tools-not-a-uuid', 'codex-ipc;Write-Output WRONG']) {
+    const result = spawnSync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script, '-PipeName', pipeName],
+      { windowsHide: true, encoding: 'utf8', timeout: 10000 });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /validate|pattern|模式|验证/i);
+    assert.equal(result.stdout, '');
+  }
+});
 
 test('Windows binary proxy preserves every byte under child-pipe backpressure', { skip: process.platform !== 'win32', timeout: 45000 }, async t => {
   const executable = powershell();

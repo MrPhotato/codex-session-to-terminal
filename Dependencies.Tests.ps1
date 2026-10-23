@@ -34,7 +34,7 @@ try {
     $expectedVersion = '0.163.0-alpha.10.2'
     if (Test-SessionBridgeDependencies -ApplicationRoot $testRoot -ExpectedCliVersion $expectedVersion) { throw 'Empty dependencies were accepted.' }
     $fixtures = @{
-        'package.json' = '{"dependencies":{"ws":"8.22.0","ajv":"8.17.1"}}'
+        'package.json' = '{"dependencies":{"ws":"8.22.0","ajv":"8.17.1","node-pty":"1.1.0","@xterm/headless":"6.0.0"}}'
         'node_modules\@openai\codex\package.json' = '{"version":"0.163.0-alpha.10.2"}'
         'node_modules\@openai\codex-win32-x64\package.json' = '{"version":"0.163.0-alpha.10.2-win32-x64"}'
         'node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe' = 'inert file; never executable'
@@ -42,6 +42,13 @@ try {
         'node_modules\ws\index.js' = '// inert dependency fixture'
         'node_modules\ajv\package.json' = '{"version":"8.17.1"}'
         'node_modules\ajv\dist\ajv.js' = '// inert dependency fixture'
+        'node_modules\node-pty\package.json' = '{"version":"1.1.0"}'
+        'node_modules\node-pty\lib\index.js' = '// inert fixture'
+        'node_modules\node-pty\prebuilds\win32-x64\conpty.node' = 'inert fixture'
+        'node_modules\node-pty\prebuilds\win32-x64\conpty\conpty.dll' = 'inert fixture'
+        'node_modules\node-pty\prebuilds\win32-x64\conpty\OpenConsole.exe' = 'inert fixture'
+        'node_modules\@xterm\headless\package.json' = '{"version":"6.0.0"}'
+        'node_modules\@xterm\headless\lib-headless\xterm-headless.js' = '// inert fixture'
     }
     foreach ($entry in $fixtures.GetEnumerator()) {
         $path = Join-Path $testRoot $entry.Key
