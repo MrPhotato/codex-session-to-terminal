@@ -31,9 +31,11 @@ other = { command = "tool", env = { SECRET = "NEVER_COPY" } }
 });
 
 async function fixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'cst-reader-test-'));
+  // Windows runners may expose an 8.3 TEMP path; production resolves plugin
+  // files to their long spelling before stat, so use that same spelling here.
+  const directory = await fs.realpath(await mkdtemp(join(tmpdir(), 'cst-reader-test-')));
   t.after(async () => {
-    assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
+    assert.equal(dirname(resolve(directory)), await fs.realpath(tmpdir()));
     assert(directory.includes('cst-reader-test-'));
     await rm(directory, { recursive: true, force: true });
   });

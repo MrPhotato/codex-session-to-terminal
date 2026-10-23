@@ -18,7 +18,7 @@
     "x64"
   ],
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "test:powershell": "pwsh -NoProfile -File Test-PowerShell.ps1"
   },
   "dependencies": {

@@ -464,7 +464,8 @@ test('the default admits the observed large history header up to the Desktop pro
   const allocations = [];
   // Exercise header admission with a tiny stand-in for the body. This does not
   // claim to test a 118 MiB transfer and never allocates private history bytes.
-  t.mock.method(Buffer, 'allocUnsafe', bytes => { allocations.push(bytes); return Buffer.alloc(1); });
+  const allocation = t.mock.method(Buffer, 'allocUnsafe', bytes => { allocations.push(bytes); return Buffer.alloc(1); });
+  try {
   const header = Buffer.alloc(4); header.writeUInt32LE(123537367);
   assert.doesNotThrow(() => client._parse(header));
   assert.deepEqual(allocations, [123537367]);
@@ -476,6 +477,11 @@ test('the default admits the observed large history header up to the Desktop pro
   header.writeUInt32LE(123537367);
   assert.throws(() => limited._parse(header), { code: 'FRAME_TOO_LARGE', frameBytes: 123537367, limitBytes: 67108864 });
   assert.deepEqual(allocations, [123537367]);
+  } finally {
+    // Restore synchronously, before node:test serializes this test's result.
+    // Waiting for automatic mock cleanup can corrupt the runner's own buffers.
+    allocation.mock.restore();
+  }
 });
 
 test('discovers an existing owner with its own assigned identity, follows and cleans up', async t => {

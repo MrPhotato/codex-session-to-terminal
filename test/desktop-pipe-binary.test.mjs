@@ -28,7 +28,7 @@ test('Windows pipe helper rejects arbitrary or command-shaped names before openi
   }
 });
 
-test('Windows binary proxy preserves every byte under child-pipe backpressure', { skip: process.platform !== 'win32', timeout: 45000 }, async t => {
+test('Windows binary proxy preserves every byte under child-pipe backpressure', { skip: process.platform !== 'win32', timeout: 105000 }, async t => {
   const executable = powershell();
   assert(executable, 'PowerShell 7 is required for the Windows binary transport regression test.');
   const proxy = await readFile(new URL('../desktop-pipe-proxy.ps1', import.meta.url), 'utf8');
@@ -53,7 +53,9 @@ test('Windows binary proxy preserves every byte under child-pipe backpressure', 
     });
     let bytes = 0, chunks = 0, diagnostics = '', failure, resume;
     const hash = createHash('sha256');
-    const timeout = setTimeout(() => { failure = new Error('Binary transport test timed out.'); child.kill(); }, 12000);
+    // Includes PowerShell startup, compilation and intentionally paused reads
+    // on shared runners; byte counts and hashes remain the acceptance checks.
+    const timeout = setTimeout(() => { failure = new Error('Binary transport test timed out.'); child.kill(); }, 30000);
     child.on('error', error => { failure = error; });
     child.stdin.on('error', error => { failure ??= error; });
     child.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk).slice(-2000); });
