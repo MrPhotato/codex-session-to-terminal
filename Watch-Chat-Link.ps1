@@ -44,8 +44,51 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 namespace CodexSharedSession {
+    // Pure decision state: retain only modifier bits and the shortcut key's
+    // down/up state. All other keys are ignored, never collected or logged.
+    public sealed class ShortcutChordState {
+        private int modifiers;
+        private bool letterDown;
+
+        public void ResetModifiers() { modifiers = 0; }
+
+        public bool Observe(ushort key, ushort scanCode, ushort flags, bool desktopForeground) {
+            if (scanCode == 0xFF || key >= 0xFF || (flags & 4) != 0) return false;
+            bool released = (flags & 1) != 0;
+            bool extended = (flags & 2) != 0;
+            int bit = 0;
+            switch (key) {
+                case 0x11: bit = extended ? 2 : 1; break; // Ctrl
+                case 0xA2: bit = 1; break;
+                case 0xA3: bit = 2; break;
+                case 0x12: bit = extended ? 8 : 4; break; // Alt
+                case 0xA4: bit = 4; break;
+                case 0xA5: bit = 8; break;
+                case 0x10: bit = scanCode == 0x36 ? 32 : 16; break; // Shift
+                case 0xA0: bit = 16; break;
+                case 0xA1: bit = 32; break;
+                case 0x5B: bit = 64; break;
+                case 0x5C: bit = 128; break;
+            }
+            if (bit != 0) {
+                modifiers = released ? modifiers & ~bit : modifiers | bit;
+                return false;
+            }
+            if (key != 0x4C) return false;
+            if (released) { letterDown = false; return false; }
+            if (letterDown) return false;
+            letterDown = true;
+            return desktopForeground && (modifiers & 3) != 0 &&
+                (modifiers & 12) != 0 && (modifiers & 240) == 0;
+        }
+    }
+
     public sealed class ClipboardLinkListener : IDisposable {
         private const uint WM_CLIPBOARDUPDATE = 0x031D;
+        private const uint WM_INPUT = 0x00FF;
+        private const uint RID_INPUT = 0x10000003;
+        private const uint RIDEV_INPUTSINK = 0x00000100;
+        private const uint RIDEV_REMOVE = 0x00000001;
         private const uint CF_UNICODETEXT = 13;
         private const uint PM_REMOVE = 1;
         private const int MaximumCharacters = 512;
@@ -58,9 +101,17 @@ namespace CodexSharedSession {
         private uint observedSequence;
         private uint? pendingSequence;
         private int pendingAttempts;
+        private readonly ShortcutChordState shortcut = new ShortcutChordState();
+        private bool rawInputRegistered;
+        private IntPtr pendingShortcutWindow;
+        private IntPtr observedForegroundWindow;
         public event Action<string> TextChanged;
+        public event Action ShortcutPressed;
+        public bool ShortcutObservationEnabled { get { return rawInputRegistered; } }
 
-        public ClipboardLinkListener(uint requiredDesktopPid) {
+        public ClipboardLinkListener(uint requiredDesktopPid) : this(requiredDesktopPid, false) { }
+
+        public ClipboardLinkListener(uint requiredDesktopPid, bool observeShortcut = false) {
             desktopPid = requiredDesktopPid;
             className = "CodexSharedSessionClipboard." + Process.GetCurrentProcess().Id;
             instance = GetModuleHandle(null);
@@ -80,6 +131,7 @@ namespace CodexSharedSession {
                     throw new InvalidOperationException("Clipboard listener unavailable.");
                 // Existing clipboard content is deliberately ignored at startup.
                 observedSequence = GetClipboardSequenceNumber();
+                if (observeShortcut) RegisterShortcutObservation();
             } catch { Dispose(); throw; }
         }
 
@@ -90,6 +142,11 @@ namespace CodexSharedSession {
         }
 
         private IntPtr HandleMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam) {
+            if (message == WM_INPUT && rawInputRegistered) {
+                ObserveRawInput(lParam);
+                // Windows owns the input handle and requires default cleanup.
+                return DefWindowProc(handle, message, wParam, lParam);
+            }
             if (message == WM_CLIPBOARDUPDATE) {
                 uint sequence = GetClipboardSequenceNumber();
                 if (sequence != observedSequence) {
@@ -107,11 +164,18 @@ namespace CodexSharedSession {
         }
 
         public void Pump() {
+            if (rawInputRegistered) RefreshShortcutForeground();
             NativeMessage message;
             while (window != IntPtr.Zero && PeekMessage(out message, window, 0, 0, PM_REMOVE)) {
                 TranslateMessage(ref message);
                 DispatchMessage(ref message);
             }
+            // Deliver the chord before clipboard text, so the same local copy
+            // action can cancel the cloud-only fallback in this pump cycle.
+            IntPtr shortcutWindow = pendingShortcutWindow;
+            pendingShortcutWindow = IntPtr.Zero;
+            if (shortcutWindow != IntPtr.Zero && IsDesktopForeground(shortcutWindow))
+                ShortcutPressed?.Invoke();
             if (!pendingSequence.HasValue) return;
             if (ForegroundProcessId() != desktopPid || GetClipboardSequenceNumber() != pendingSequence.Value) {
                 pendingSequence = null;
@@ -148,7 +212,9 @@ namespace CodexSharedSession {
 
         public void Dispose() {
             pendingSequence = null;
+            pendingShortcutWindow = IntPtr.Zero;
             if (window != IntPtr.Zero) {
+                UnregisterShortcutObservation();
                 RemoveClipboardFormatListener(window);
                 DestroyWindow(window);
                 window = IntPtr.Zero;
@@ -158,6 +224,91 @@ namespace CodexSharedSession {
                 registered = false;
             }
             GC.KeepAlive(procedure);
+        }
+
+        private bool IsDesktopForeground(IntPtr expectedWindow) {
+            IntPtr foreground = GetForegroundWindow();
+            if (foreground == IntPtr.Zero || foreground != expectedWindow) return false;
+            uint pid;
+            GetWindowThreadProcessId(foreground, out pid);
+            return pid == desktopPid;
+        }
+
+        private void RegisterShortcutObservation() {
+            bool existing;
+            IntPtr target;
+            // Raw registration belongs to the process, not this class. Never
+            // replace another component's keyboard registration.
+            if (!TryGetKeyboardRegistration(out existing, out target) || existing) return;
+            var devices = new[] { new RawInputDevice {
+                UsagePage = 1, Usage = 6, Flags = RIDEV_INPUTSINK, Target = window
+            } };
+            if (!RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<RawInputDevice>())) return;
+            rawInputRegistered = true;
+            RefreshShortcutForeground();
+            // Seed only keys relevant to this chord, including a held L so
+            // activation cannot turn an already-held key into a fresh press.
+            if ((GetAsyncKeyState(0x4C) & 0x8000) != 0) shortcut.Observe(0x4C, 0, 0, false);
+        }
+
+        private IntPtr RefreshShortcutForeground() {
+            IntPtr foreground = GetForegroundWindow();
+            if (foreground == observedForegroundWindow) return foreground;
+            observedForegroundWindow = foreground;
+            pendingShortcutWindow = IntPtr.Zero;
+            shortcut.ResetModifiers();
+            // Focus changes can hide releases (for example a secure desktop).
+            // Rebase only modifier bits; never record arbitrary pressed keys.
+            ushort[] keys = { 0xA2, 0xA3, 0xA4, 0xA5, 0xA0, 0xA1, 0x5B, 0x5C };
+            foreach (ushort key in keys)
+                if ((GetAsyncKeyState(key) & 0x8000) != 0) shortcut.Observe(key, 0, 0, false);
+            return foreground;
+        }
+
+        private void ObserveRawInput(IntPtr input) {
+            RawKeyboardInput packet;
+            uint size = (uint)Marshal.SizeOf<RawKeyboardInput>();
+            uint copied = GetRawInputData(input, RID_INPUT, out packet, ref size,
+                (uint)Marshal.SizeOf<RawInputHeader>());
+            if (copied != (uint)Marshal.SizeOf<RawKeyboardInput>() ||
+                packet.Header.Type != 1 || packet.Header.Size != copied) return;
+            IntPtr foreground = RefreshShortcutForeground();
+            bool matches = IsDesktopForeground(foreground);
+            if (shortcut.Observe(packet.Keyboard.VirtualKey, packet.Keyboard.MakeCode,
+                packet.Keyboard.Flags, matches)) pendingShortcutWindow = foreground;
+        }
+
+        private void UnregisterShortcutObservation() {
+            if (!rawInputRegistered) return;
+            rawInputRegistered = false;
+            bool existing;
+            IntPtr target;
+            if (!TryGetKeyboardRegistration(out existing, out target) || !existing || target != window) return;
+            var devices = new[] { new RawInputDevice {
+                UsagePage = 1, Usage = 6, Flags = RIDEV_REMOVE, Target = IntPtr.Zero
+            } };
+            RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<RawInputDevice>());
+        }
+
+        private static bool TryGetKeyboardRegistration(out bool existing, out IntPtr target) {
+            existing = false;
+            target = IntPtr.Zero;
+            uint count = 0;
+            uint size = (uint)Marshal.SizeOf<RawInputDevice>();
+            uint result = GetRegisteredRawInputDevices(null, ref count, size);
+            if (result == uint.MaxValue && Marshal.GetLastWin32Error() != 122) return false;
+            if (count == 0) return result != uint.MaxValue;
+            if (count > 256) return false;
+            var devices = new RawInputDevice[count];
+            result = GetRegisteredRawInputDevices(devices, ref count, size);
+            if (result == uint.MaxValue || result > devices.Length) return false;
+            for (int index = 0; index < result; index++) {
+                if (devices[index].UsagePage != 1 || devices[index].Usage != 6) continue;
+                existing = true;
+                target = devices[index].Target;
+                return true;
+            }
+            return true;
         }
 
         [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -182,6 +333,31 @@ namespace CodexSharedSession {
             public int X, Y;
             public uint Private;
         }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawInputDevice {
+            public ushort UsagePage, Usage;
+            public uint Flags;
+            public IntPtr Target;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawInputHeader {
+            public uint Type, Size;
+            public IntPtr Device, WParam;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawKeyboard {
+            public ushort MakeCode, Flags, Reserved, VirtualKey;
+            public uint Message, ExtraInformation;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RawKeyboardInput {
+            public RawInputHeader Header;
+            public RawKeyboard Keyboard;
+        }
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterRawInputDevices([In] RawInputDevice[] devices, uint count, uint size);
+        [DllImport("user32.dll", SetLastError = true)] private static extern uint GetRegisteredRawInputDevices([Out] RawInputDevice[] devices, ref uint count, uint size);
+        [DllImport("user32.dll", SetLastError = true)] private static extern uint GetRawInputData(IntPtr input, uint command, out RawKeyboardInput packet, ref uint size, uint headerSize);
+        [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetModuleHandle(string name);
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern ushort RegisterClassEx(ref WindowClass windowClass);
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr CreateWindowEx(uint extendedStyle, string className, string name, uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);

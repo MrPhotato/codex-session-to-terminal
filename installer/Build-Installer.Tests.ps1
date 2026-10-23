@@ -31,6 +31,19 @@ try {
     [void](New-Item -ItemType Directory -Path $fixtureRepo)
     Get-ChildItem -LiteralPath $repo -File | Copy-Item -Destination $fixtureRepo
     Copy-Item -LiteralPath (Join-Path $repo 'assets') -Destination $fixtureRepo -Recurse
+    Copy-Item -LiteralPath (Join-Path $repo 'protocol-schema') -Destination $fixtureRepo -Recurse
+    # Installer tests use an inert build fixture. Production compiles the reviewed
+    # native source; no native window or application code runs in this suite.
+    Write-FixtureFile (Join-Path $fixtureRepo 'Build-Navigation.ps1') @'
+param([string]$OutputDirectory)
+[void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
+[IO.File]::WriteAllBytes((Join-Path $OutputDirectory 'Desktop-Navigation.exe'), [byte[]](77,90,0,0))
+'@
+    Write-FixtureFile (Join-Path $fixtureRepo 'Build-Context.ps1') @'
+param([string]$OutputDirectory)
+[void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
+[IO.File]::WriteAllBytes((Join-Path $OutputDirectory 'Desktop-Context.exe'), [byte[]](77,90,0,0))
+'@
     Write-FixtureFile (Join-Path $fixtureRepo 'auth.json') 'DO-NOT-PACK-test-sentinel'
     Write-FixtureFile (Join-Path $fixtureRepo '.env') 'DO-NOT-PACK-test-sentinel'
     Write-FixtureFile (Join-Path $fixtureRepo 'node_modules\private-state.json') 'DO-NOT-PACK-test-sentinel'
@@ -53,6 +66,9 @@ try {
         }
     }
     if (Test-Path -LiteralPath (Join-Path $payload 'node_modules')) { throw 'Developer dependencies were copied.' }
+    foreach ($navigationFile in @('Desktop-Navigation.cs', 'Build-Navigation.ps1', 'bin\Desktop-Navigation.exe', 'Desktop-Context.cs', 'Build-Context.ps1', 'bin\Desktop-Context.exe', 'desktop-title-context.mjs', 'cloud-title-selection.mjs', 'cloud-identity-links.mjs')) {
+        if (!$include.Contains($navigationFile) -or !(Test-Path -LiteralPath (Join-Path $payload $navigationFile))) { throw "Native navigation file missing: $navigationFile" }
+    }
     if ((Get-Content -LiteralPath (Join-Path $payload 'licenses\INNO-SETUP-LICENSE.txt') -Raw).Trim() -cne 'compiler-license-sentinel') {
         throw 'The original compiler license was not preserved.'
     }
@@ -60,6 +76,18 @@ try {
         throw 'Bundled runtime files were changed.'
     }
     if (!$include.Contains('Start.cmd') -or !$include.Contains('Dependencies.ps1') -or !$include.Contains('Execution-Policy.ps1') -or !$include.Contains('check-startup.mjs')) { throw 'First-start entry files are missing.' }
+    foreach ($newFile in @('Start-CST.cmd','CST-Tray.ps1','CST-Panel.ps1','CST-Panel.cs', 'CST-TrayMenu.cs','CST-Presence.ps1','cst-presence.mjs','desktop-ipc.mjs','desktop-pipe-proxy.ps1','cst-terminal.mjs','cst-state.mjs','cst-transport.mjs','cst-queue.mjs','LEGACY.md')) {
+        if (!$include.Contains($newFile)) { throw "Independent mode or rollback file missing: $newFile" }
+    }
+    foreach ($nativeFile in @('cst-native-terminal.mjs','native-cli-bridge.mjs','readonly-metadata.mjs','desktop-control.mjs','desktop-events.mjs','snapshot-history.mjs','lazy-history.mjs','protocol-validation.mjs','protocol-schema\ServerNotification.json','protocol-schema\v2\ThreadResumeResponse.json','protocol-schema\v2\ThreadTurnsListResponse.json','protocol-schema\v2\ThreadItemsListResponse.json')) {
+        if (!$include.Contains($nativeFile) -or !(Test-Path -LiteralPath (Join-Path $payload $nativeFile))) { throw "Native CLI adapter file missing: $nativeFile" }
+    }
+    foreach ($cloudFile in @('cst-cloud-terminal.mjs','cloud-owner-activation.mjs','cloud-desktop-reader.mjs','cloud-app-tools.mjs','cloud-native-cli-bridge.mjs','cloud-native-metadata.mjs','cloud-windows-attachment.mjs','cloud-windows-cli-proxy.mjs','cloud-readonly-view.mjs','cloud-readonly-input.mjs','CLOUD-DEVELOPMENT.md','terminal-session-view.mjs','terminal-session-input.mjs','desktop-session-navigation.mjs','desktop-button-action.mjs','Focus-Desktop.ps1')) {
+        if (!$include.Contains($cloudFile) -or !(Test-Path -LiteralPath (Join-Path $payload $cloudFile))) { throw "Cloud read-only file missing: $cloudFile" }
+    }
+    foreach ($researchFile in @('cloud-interrupt-control.mjs','cloud-interrupt-controller.mjs','cloud-history-refresh.mjs')) {
+        if ($include.Contains($researchFile)) { throw "Experimental cloud control entered the product: $researchFile" }
+    }
 
     # A tiny command fixture has no PE version resource. Its supported version
     # response must pass; a different version or failed probe must still fail.
@@ -86,8 +114,16 @@ try {
     foreach ($required in @('PrivilegesRequired=lowest', 'CloseApplications=no', 'RestartApplications=no',
         'ArchitecturesAllowed=x64os', 'UsePreviousAppDir=no', 'function InitializeUninstall',
         'function PrepareToInstall', 'CompareText(AppDirectory, ExpectedDirectory)', 'AttributeReparsePoint',
-        'FileOpenReadWrite or FileShareExclusive', 'Check: DesktopShortcutAvailable')) {
+        'FileOpenReadWrite or FileShareExclusive', 'Check: ShouldCreateDesktopShortcut',
+        'function IsProductShortcut', 'procedure ConsolidateShortcuts',
+        'if Trim(Shortcut.Arguments) <>', 'FileCopy(Path, BackupPath, True)')) {
         if (!$definition.Contains($required)) { throw "Installer constraint missing: $required" }
+    }
+    $iconsBlock = [regex]::Match($definition, '(?s)\[Icons\](.*?)\[UninstallDelete\]').Groups[1].Value
+    $icons = @($iconsBlock -split '\r?\n' | Where-Object { $_ -match '^Name:' })
+    if ($icons.Count -ne 2 -or @($icons | Where-Object { $_ -notmatch 'Filename: "\{app\}\\Start-CST\.cmd"' }).Count -ne 0 -or
+        $iconsBlock.Contains(' - Independent') -or $iconsBlock.Contains(' - Legacy Shared Startup')) {
+        throw 'Installation must expose only the standard product entry targeting the current tray.'
     }
     if ($definition -match '(?im)^\[(Run|UninstallRun|InstallDelete)\]') { throw 'The installer must not execute application actions.' }
     $deleteEntries = @($definition -split '\r?\n' | Where-Object { $_ -match '^Type:.*Name:' })

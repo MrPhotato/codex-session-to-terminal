@@ -6,7 +6,7 @@ param(
     [string]$CompilerPath,
     [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'output\installer'),
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$')]
-    [string]$Version = '0.1.0-preview.2',
+    [string]$Version = '0.2.0-preview.1',
     [switch]$ValidateOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -15,13 +15,27 @@ Set-StrictMode -Version Latest
 # Copy only reviewed application files. Secrets, generated private state, tests,
 # .git, and a developer's node_modules are not part of the installer payload.
 $sourceFiles = @(
+    'Start-CST.cmd', 'Start-CST.ps1', 'CST-Tray.ps1', 'desktop-pipe-proxy.ps1',
+    'CST-Panel.ps1', 'CST-Panel.cs', 'CST-TrayMenu.cs', 'CST-Presence.ps1', 'cst-presence.mjs',
+    'desktop-ipc.mjs', 'cst-transport.mjs', 'cst-state.mjs', 'cst-queue.mjs', 'cst-terminal.mjs', 'LEGACY.md',
+    'cst-native-terminal.mjs', 'native-cli-bridge.mjs', 'readonly-metadata.mjs',
+    'cst-cloud-terminal.mjs', 'cloud-desktop-reader.mjs', 'cloud-app-tools.mjs', 'cloud-owner-activation.mjs', 'cloud-identity-links.mjs',
+    'cloud-native-cli-bridge.mjs', 'cloud-native-metadata.mjs', 'cloud-windows-attachment.mjs',
+    'cloud-windows-cli-proxy.mjs', 'cloud-readonly-view.mjs', 'cloud-readonly-input.mjs', 'CLOUD-DEVELOPMENT.md',
+    'terminal-session-view.mjs', 'terminal-session-input.mjs', 'desktop-session-navigation.mjs', 'desktop-button-action.mjs', 'Focus-Desktop.ps1',
+    'Desktop-Navigation.cs', 'Build-Navigation.ps1',
+    'Desktop-Context.cs', 'Build-Context.ps1', 'desktop-title-context.mjs', 'cloud-title-selection.mjs',
+    'desktop-control.mjs', 'desktop-events.mjs', 'snapshot-history.mjs', 'lazy-history.mjs', 'protocol-validation.mjs',
+    'protocol-schema\LICENSE', 'protocol-schema\NOTICE', 'protocol-schema\ServerNotification.json', 'protocol-schema\v2\ThreadResumeResponse.json',
+    'protocol-schema\v2\ThreadTurnsListResponse.json', 'protocol-schema\v2\ThreadItemsListResponse.json',
     'Start.cmd', 'Start-Flow.ps1', 'Dependencies.ps1', 'Execution-Policy.ps1', 'bootstrap.ps1', 'production.ps1',
     'Discovery.ps1', 'Build-Shim.ps1', 'CodexSharedShim.cs',
     'Launcher-Environment.ps1', 'Watch-Chat-Link.ps1', 'Terminal-Focus.ps1',
     'Thread-Link.ps1', 'bridge-shim.mjs', 'rpc-client.mjs', 'check-live.mjs', 'check-startup.mjs',
     'Enable-Normal-Desktop.cmd', 'Open-Current-Chat.cmd', 'Prepare.cmd',
     'Status.cmd', 'Stop-Shortcut.cmd', 'package.json', 'package-lock.json',
-    'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md', 'assets\icon.ico', 'assets\icon.png'
+    'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md', 'assets\icon.ico', 'assets\icon.png',
+    'assets\session-panel-dark.png', 'assets\session-panel-light.png'
 )
 $repo = (Resolve-Path -LiteralPath $RepoRoot).Path.TrimEnd('\')
 $payload = [IO.Path]::GetFullPath($PayloadDirectory).TrimEnd('\')
@@ -65,7 +79,7 @@ foreach ($relative in $sourceFiles) {
     $destinationParent = Split-Path -Parent $destination
     if (Test-Path -LiteralPath $destinationParent) {
         if ((Get-Item -LiteralPath $destinationParent).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Payload links are not allowed: $relative" }
-    } else { [void](New-Item -ItemType Directory -Path $destinationParent) }
+    } else { [void](New-Item -ItemType Directory -Path $destinationParent -Force) }
     if ((Test-Path -LiteralPath $destination) -and ((Get-Item -LiteralPath $destination).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Payload links are not allowed: $relative"
     }
@@ -87,7 +101,15 @@ if ((Test-Path -LiteralPath $licenseDestination) -and ((Get-Item -LiteralPath $l
 Copy-Item -LiteralPath $compilerLicense -Destination $licenseDestination -Force
 [void](New-Item -ItemType Directory -Path $output -Force)
 $includePath = Join-Path $output "payload-files-$Version.iss"
-$includeLines = foreach ($relative in ($sourceFiles + 'licenses\INNO-SETUP-LICENSE.txt')) {
+# Compile the reviewed source into this clean payload, never copy a developer's
+# pre-existing executable. The helper --check performs no UI or app operations.
+$navigationDirectory = Join-Path $payload 'bin'
+if ((Test-Path -LiteralPath $navigationDirectory) -and ((Get-Item -LiteralPath $navigationDirectory).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Navigation payload directory cannot be a link.' }
+& (Join-Path $repo 'Build-Navigation.ps1') -OutputDirectory $navigationDirectory | Out-Null
+if (!(Test-Path -LiteralPath (Join-Path $navigationDirectory 'Desktop-Navigation.exe') -PathType Leaf)) { throw 'Navigation helper was not built.' }
+& (Join-Path $repo 'Build-Context.ps1') -OutputDirectory $navigationDirectory | Out-Null
+if (!(Test-Path -LiteralPath (Join-Path $navigationDirectory 'Desktop-Context.exe') -PathType Leaf)) { throw 'Context helper was not built.' }
+$includeLines = foreach ($relative in ($sourceFiles + @('licenses\INNO-SETUP-LICENSE.txt', 'bin\Desktop-Navigation.exe', 'bin\Desktop-Context.exe'))) {
     $subdirectory = Split-Path -Parent $relative
     $destination = if ($subdirectory) { '{app}\' + $subdirectory } else { '{app}' }
     'Source: "{#PayloadRoot}\' + $relative + '"; DestDir: "' + $destination + '"; Flags: ignoreversion'
