@@ -98,7 +98,7 @@ export function matchesCloudMessageEvidence(state, nativeId, evidence) {
   // Do not accept an older matching message, a disconnected history island, or
   // an optimistic turn appended after the authoritative current boundary.
   if (!latest || latest !== canonicalLatest || !Array.isArray(latest.items)) return false;
-  const liveTurn = evidence.discovered === true && state.historyMode === 'legacy' &&
+  const liveTurn = state.historyMode === 'legacy' &&
     (latest.status === 'inProgress' && state.threadRuntimeStatus?.type === 'active' ||
       latest.status === 'completed' && state.threadRuntimeStatus?.type === 'idle') &&
     Number.isSafeInteger(latest.turnStartedAtMs) && latest.turnStartedAtMs > 0 &&
@@ -106,22 +106,18 @@ export function matchesCloudMessageEvidence(state, nativeId, evidence) {
   if (!liveTurn && (latest.itemsPagination?.hasLoadedOldest !== true || latest.itemsPagination.evicted === true ||
       latest.itemsPagination.reconnect != null)) return false;
   const users = latest.items.filter(item => item?.type === 'userMessage');
-  if (evidence.discovered === true) {
-    // Continued user input can be admitted into the same native turn. Check
-    // the last admitted user ID, while preserving the first-input invariant.
-    const ids = users.map(item => id(item.clientId));
-    // A live cloud turn has a canonical server turn ID but no paginated-history
-    // fields yet. Its admitted user ID must still match a fresh frontend read;
-    // a supplied conflicting root ID is never ignored.
-    const rootId = latest.params?.clientUserMessageId;
-    return users.length > 0 && latest.items[0] === users[0] && ids.every(Boolean) &&
-      new Set(ids).size === ids.length && (id(rootId) === ids[0] || liveTurn && rootId == null) &&
-      ids.at(-1) === clientMessageId &&
-      !latest.items.some(item => item?.type === 'steeringUserMessage' && item.status === 'accepted');
-  }
-  if (users.length !== 1 || latest.items[0] !== users[0] ||
-      latest.items.some(item => item?.type === 'steeringUserMessage' && item.status === 'accepted')) return false;
-  return id(users[0].clientId) === clientMessageId && id(latest.params?.clientUserMessageId) === clientMessageId;
+  // Candidate provenance must not change message validation. Both a previously
+  // checked link and a new discovery can receive live canonical turns, including
+  // additional user input admitted into the same native turn after Continue.
+  const ids = users.map(item => id(item.clientId));
+  // Live turns may lack paginated-history fields and a root receipt. The latest
+  // admitted ID must still match a fresh frontend read, and a supplied root ID
+  // must agree with the first input. Incomplete paginated turns remain rejected.
+  const rootId = latest.params?.clientUserMessageId;
+  return users.length > 0 && latest.items[0] === users[0] && ids.every(Boolean) &&
+    new Set(ids).size === ids.length && (id(rootId) === ids[0] || liveTurn && rootId == null) &&
+    ids.at(-1) === clientMessageId &&
+    !latest.items.some(item => item?.type === 'steeringUserMessage' && item.status === 'accepted');
 }
 
 export function cloudFrontends(list) {

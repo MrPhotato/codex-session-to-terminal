@@ -144,6 +144,22 @@ test('a warm linked session verifies current message identity before display eve
   assert.ok(f.calls.includes('linked.view'));
 });
 
+test('a previously linked cloud session accepts current completed/live receipts after Continue',async()=>{
+  for(const status of ['completed','inProgress']) for(const continuation of [false,true]) {
+    const f=linkedFixture(),state=f.attachment.state,turn=state.turnHistory.history.entitiesByKey.latest;
+    state.historyMode='legacy';state.threadRuntimeStatus={type:status==='completed'?'idle':'active'};
+    turn.turnId='eeeeeeee-3333-4333-8333-333333333333';turn.turnStartedAtMs=1792739849168;
+    turn.status=status;turn.params={};delete turn.itemsPagination;
+    if(continuation){
+      turn.items.push({type:'userMessage',clientId:laterMessageId});
+      f.frontend.turns[0].items[0].id=laterMessageId;
+    }
+    assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
+    assert.equal(f.calls.filter(call=>call.launch).length,1);
+    assert.deepEqual(f.calls.filter(call=>call.read).map(call=>call.read),[frontendId,id]);
+  }
+});
+
 test('cached identity is only a hint: mismatched or incomplete native evidence closes without displaying',async()=>{
   const mutations=[
     state=>{state.turnHistory.history.entitiesByKey.latest.params.clientUserMessageId=laterMessageId;},

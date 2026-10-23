@@ -185,23 +185,23 @@ test('discovery is bounded and a late read cannot start scanning further chats',
   assert.equal(calls, 1);
 });
 
-test('discovered candidate still requires exact latest admitted client ID including in-turn user continuation', () => {
+for (const discovered of [false, true]) test(`${discovered ? 'discovered' : 'linked'} candidate requires exact latest admitted client ID including in-turn user continuation`, () => {
   const s = nativeState();
   latestTurn(s).items.push({ type: 'userMessage', clientId: otherId });
-  const ev = { frontendId, clientMessageId: otherId, discovered: true };
+  const ev = { frontendId, clientMessageId: otherId, ...(discovered ? { discovered: true } : {}) };
   assert.equal(matchesCloudMessageEvidence(s, nativeId, ev), true);
   assert.equal(matchesCloudMessageEvidence(s, nativeId, { ...ev, clientMessageId }), false);
   latestTurn(s).params.clientUserMessageId = otherId;
   assert.equal(matchesCloudMessageEvidence(s, nativeId, ev), false);
 });
 
-test('a live canonical cloud turn verifies its frontend receipt before paginated history exists', () => {
+for (const discovered of [false, true]) test(`a live canonical ${discovered ? 'discovered' : 'linked'} cloud turn verifies its frontend receipt before paginated history exists`, () => {
   const make = () => {
     const s = nativeState(); s.historyMode = 'legacy'; s.threadRuntimeStatus = { type: 'active' };
     const t = latestTurn(s); t.status = 'inProgress'; t.turnStartedAtMs = 1792736659826; t.params = {}; delete t.itemsPagination;
     return s;
   };
-  const ev = { ...evidence(), discovered: true };
+  const ev = { ...evidence(), ...(discovered ? { discovered: true } : {}) };
   assert.equal(matchesCloudMessageEvidence(make(), nativeId, ev), true);
   const completed = make(); completed.threadRuntimeStatus.type = 'idle'; latestTurn(completed).status = 'completed';
   assert.equal(matchesCloudMessageEvidence(completed, nativeId, ev), true);
@@ -213,5 +213,4 @@ test('a live canonical cloud turn verifies its frontend receipt before paginated
     s => s.turns.push({ turnId: clientMessageId, items: [] })]) {
     const s = make(); change(s); assert.equal(matchesCloudMessageEvidence(s, nativeId, ev), false);
   }
-  assert.equal(matchesCloudMessageEvidence(make(), nativeId, evidence()), false);
 });

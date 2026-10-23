@@ -927,4 +927,26 @@ installed, unmodified Windows CLI against both affected native IDs and displayed
 the expected content, session titles and read-only banner in 3035 ms and 2064 ms.
 Those measurements start with an explicit, already known native ID; they do not
 include automatic cloud discovery. Only the test viewers and followers closed.
-Physical drag/copy acceptance remains separate from these automated checks.
+The user subsequently confirmed that physical drag/copy works.
+
+## Linked cloud receipt validation after Continue (23 October 2026)
+
+That acceptance also exposed a separate connection rejection on a previously
+linked chat. Live read-only inspection of both affected chats showed exact
+frontend/native latest client-message ID agreement. Their completed canonical
+turns had no paginated-history fields or root receipt yet. Discovery already
+accepted this validated live shape, but the previously linked path required
+the older paginated form and rejected both valid sessions.
+
+Both candidate paths now use the same current-message checks, including user
+continuation inside one turn. The canonical latest exhausted boundary, durable
+identity, live status/time/server turn ID, complete paginated items when present,
+unique admitted client IDs and latest frontend receipt are still required.
+Conflicting supplied root receipts, duplicates, unresolved steering, optimistic
+turns and incomplete history remain rejected. No link was added or altered.
+
+All 530 JavaScript tests passed. Fresh live checks accepted both affected
+histories through both paths; earlier checks against those same message IDs
+reproduced rejection only in the linked path. Shortcut acceptance is separate
+from these checks. New terminals load the correction without restarting Desktop
+or the tray.
