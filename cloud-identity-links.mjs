@@ -159,7 +159,21 @@ export async function discoverCloudCandidate(list, frontend, read, { signal, tim
     if (signal?.aborted) controller.abort();
   });
   const operation = async () => {
-    const source = await read(frontend.id, { turnLimit: 4, maxOutputCharsPerItem: 4096 });
+    // Most summaries expose one user message per turn. Read only the two turns
+    // needed for nomination; retain the previous four-turn bound for summaries
+    // that contain intermediate turns with no user input.
+    const readTail = async (threadId, options = {}, expectedTail) => {
+      let result = await read(threadId, { ...options, turnLimit: 2, maxOutputCharsPerItem: 4096 });
+      const recent = userTail(result);
+      // Older turns cannot repair an already different (or truncated) latest
+      // user input. Exhausted histories cannot provide an older input either.
+      const mayMatch = !expectedTail || recent.length === 0 || recent.at(-1) === expectedTail.at(-1);
+      if (recent.length < 2 && mayMatch && result.page?.hasMore !== false && !controller.signal.aborted) {
+        result = await read(threadId, { ...options, turnLimit: 4, maxOutputCharsPerItem: 4096 });
+      }
+      return result;
+    };
+    const source = await readTail(frontend.id);
     const evidence = frontendMessageEvidence(source, frontend.id, frontend.title);
     const tail = userTail(source);
     if (!evidence || tail.length !== 2 || tail.some(value => !value) || tail.join('').length < 24) return null;
@@ -174,7 +188,7 @@ export async function discoverCloudCandidate(list, frontend, read, { signal, tim
     const scan = async () => {
      while (next < rows.length && !controller.signal.aborted && !invalid) {
       const row = rows[next++];
-      const native = await read(row.id, { hostId: 'durable', turnLimit: 4, maxOutputCharsPerItem: 4096 });
+      const native = await readTail(row.id, { hostId: 'durable' }, tail);
       if (native.thread?.id !== row.id || native.thread.kind !== 'codex' || native.thread.hostId !== 'durable') { invalid = true; return; }
       const other = userTail(native);
       if (other.length === 2 && tail.every((value, index) => value === other[index])) {

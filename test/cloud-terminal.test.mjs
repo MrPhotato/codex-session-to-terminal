@@ -160,6 +160,20 @@ test('a previously linked cloud session accepts current completed/live receipts 
   }
 });
 
+test('linked frontend and native reads overlap but no viewer opens before both pass',async()=>{
+  const f=linkedFixture();let resolveFrontend,resolveNative;
+  f.reader.readConversation=(target)=>new Promise(resolve=>{
+    if(target===frontendId)resolveFrontend=()=>resolve(f.frontend);
+    else resolveNative=()=>resolve(f.native);
+  });
+  const running=runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies);
+  while(!resolveFrontend||!resolveNative)await new Promise(resolve=>setImmediate(resolve));
+  resolveNative();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.calls.some(call=>call.attachment||call.launch),false);
+  resolveFrontend();assert.equal(await running,0);
+  assert.equal(f.calls.filter(call=>call.launch).length,1);
+});
+
 test('cached identity is only a hint: mismatched or incomplete native evidence closes without displaying',async()=>{
   const mutations=[
     state=>{state.turnHistory.history.entitiesByKey.latest.params.clientUserMessageId=laterMessageId;},

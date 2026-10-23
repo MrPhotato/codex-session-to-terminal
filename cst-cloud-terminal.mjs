@@ -172,9 +172,11 @@ export async function runCloudTerminal(options, dependencies = {}) {
         await loadIdentityLinks(options.controlDirectory));
       if (link) {
         try {
-          const frontend = await reader.readConversation(link.frontendId, { turnLimit: 1, maxOutputCharsPerItem: 1 });
+          const [frontend, native] = await measure('linkedRead', () => Promise.all([
+            reader.readConversation(link.frontendId, { turnLimit: 1, maxOutputCharsPerItem: 1 }),
+            reader.readConversation(link.nativeId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }),
+          ]));
           const evidence = frontendMessageEvidence(frontend, link.frontendId, titleContext.title);
-          const native = evidence && await reader.readConversation(link.nativeId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 });
           if (evidence && native.thread?.id === link.nativeId && native.thread.kind === 'codex' && native.thread.hostId === 'durable' &&
               await recheckTitleContext(titleContext, { signal: lifetime.signal })) {
             original = native; messageEvidence = evidence; frontendTitle = titleContext.title;

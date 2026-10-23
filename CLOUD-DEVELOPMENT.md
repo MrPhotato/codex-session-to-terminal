@@ -920,7 +920,7 @@ right click to copy. Esc, paging and resize release selection. The bounded
 Windows clipboard writer passes UTF-16LE text to clip.exe over stdin, without
 a shell, clipboard reads or a resident helper. Child OSC clipboard commands,
 pasted controls, sending and interruption remain blocked. A footer explains the
-copy gestures; native Shift+drag selection also remains available.
+copy gestures; ordinary drag selection requires no modifier key.
 
 All 527 JavaScript tests passed. Hidden test-owned ConPTY viewers then ran the
 installed, unmodified Windows CLI against both affected native IDs and displayed
@@ -947,6 +947,31 @@ turns and incomplete history remain rejected. No link was added or altered.
 
 All 530 JavaScript tests passed. Fresh live checks accepted both affected
 histories through both paths; earlier checks against those same message IDs
-reproduced rejection only in the linked path. Shortcut acceptance is separate
-from these checks. New terminals load the correction without restarting Desktop
-or the tray.
+reproduced rejection only in the linked path. The user then confirmed that the
+physical shortcut opened the intended chat with correct content and working
+ordinary drag/copy. New terminals load the correction without restarting
+Desktop or the tray.
+
+## Bounded discovery reads (23 October 2026)
+
+Discovery now requests two recent turns first, keeping the previous four-turn
+limit as a fallback when fewer than two user messages are available. It avoids
+that expansion for an exhausted history or a latest user input that already
+cannot match. Every listed native candidate is still checked, possible matches
+still require complete ordered text, and display still requires a fresh frontend
+receipt and the native snapshot's exact latest admitted client-message ID.
+Previously enrolled candidates read their frontend and native summaries in
+parallel; neither result alone permits attachment or display.
+
+Sequential live probes on the same account observed discovery at 14,207 ms
+before the change and 12,717 ms after it, both identifying the expected native
+session. The latter made 18 reads rather than 17 because one sparse summary
+needed expansion. These are individual timings, with cache/network variance,
+not a guaranteed improvement or end-to-end shortcut latency. Helper startup
+and the fresh directory query remain additional costs. The candidate concurrency
+limit remains three. No persistent history/index cache or resident helper was
+added; the earlier cache idea remains unimplemented.
+
+All 533 JavaScript tests passed, including sparse/exhausted summaries, a
+different or truncated latest input, and overlapping linked reads that cannot
+open a viewer before both complete.

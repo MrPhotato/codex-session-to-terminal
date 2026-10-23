@@ -185,6 +185,44 @@ test('discovery is bounded and a late read cannot start scanning further chats',
   assert.equal(calls, 1);
 });
 
+test('discovery reads two turns first and expands only summaries missing the second user message', async () => {
+  for (const sparse of [false, true]) {
+    const f = discoveryFixture(), calls = [];
+    const read = async (key, options) => {
+      calls.push({ key, limit: options.turnLimit });
+      const value = structuredClone(key === frontendId ? f.source : f.target);
+      if (sparse && options.turnLimit === 2) {
+        if (key === frontendId) value.turns.length = 1;
+        else value.turns[0].items.shift();
+      }
+      return value;
+    };
+    const result = await discoverCloudCandidate(directory(), frontend(), read);
+    assert.equal(result.native.thread.id, nativeId);
+    assert.deepEqual(calls, sparse ? [
+      {key:frontendId,limit:2},{key:frontendId,limit:4},
+      {key:nativeId,limit:2},{key:nativeId,limit:4},{key:frontendId,limit:1},
+    ] : [{key:frontendId,limit:2},{key:nativeId,limit:2},{key:frontendId,limit:1}]);
+  }
+});
+
+test('discovery does not expand a complete short history or an already different latest message', async () => {
+  for (const mode of ['exhausted','different','truncated']) {
+    const f = discoveryFixture(), limits = [];
+    const read = async (key, options) => {
+      if(key===frontendId)return f.source;
+      limits.push(options.turnLimit);
+      const value=structuredClone(f.target);value.turns[0].items.splice(0,2);
+      if(mode==='exhausted')value.page.hasMore=false;
+      if(mode==='different')value.turns[0].items[0].content[0].text='A different latest user message';
+      if(mode==='truncated')value.turns[0].items[0].truncated=true;
+      return value;
+    };
+    assert.equal(await discoverCloudCandidate(directory(),frontend(),read),null);
+    assert.deepEqual(limits,[2]);
+  }
+});
+
 for (const discovered of [false, true]) test(`${discovered ? 'discovered' : 'linked'} candidate requires exact latest admitted client ID including in-turn user continuation`, () => {
   const s = nativeState();
   latestTurn(s).items.push({ type: 'userMessage', clientId: otherId });
