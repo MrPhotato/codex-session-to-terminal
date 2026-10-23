@@ -35,7 +35,7 @@ const itemFields = {
   fileChange: ['type', 'id', 'changes', 'status'],
   imageView: ['type', 'id', 'path'],
   agentMessage: ['type', 'id', 'text', 'phase', 'delivery', 'memoryCitation', 'questions'],
-  reasoning: ['type', 'id', 'summary', 'content'], contextCompaction: ['type', 'id'],
+  reasoning: ['type', 'id', 'summary', 'content'], contextCompaction: ['type', 'id', 'completed', 'source'],
   commandExecution: ['type', 'id', 'command', 'commandActions', 'cwd', 'status', 'aggregatedOutput', 'durationMs',
     'exitCode', 'pluginId', 'processId', 'scriptPath', 'source'],
   plan: ['type', 'id', 'text'], sleep: ['type', 'id', 'durationMs'],
@@ -70,6 +70,18 @@ function checkItem(item, turnId) {
   const fields = object(item) && Object.hasOwn(itemFields, item.type) ? itemFields[item.type] : null;
   if (!fields || !validId(item.id) || Object.keys(item).some(key => !fields.includes(key))) {
     fail('This cloud history item is outside the supported read-only display contract.');
+  }
+  if (item.type === 'contextCompaction') {
+    // Desktop attaches lifecycle/display metadata to the official marker.
+    // The CLI wire item has only id/type; lifecycle is carried by its existing
+    // item/started and item/completed events. Keep the marker in all histories.
+    if (Object.hasOwn(item, 'completed') && typeof item.completed !== 'boolean' ||
+        Object.hasOwn(item, 'source') && (typeof item.source !== 'string' || !item.source.length ||
+          item.source.length > 64 || /[\u0000-\u001f\u007f-\u009f]/u.test(item.source))) {
+      fail('The Desktop context compaction metadata is malformed.');
+    }
+    delete item.completed;
+    delete item.source;
   }
   if (item.type === 'collabAgentToolCall' && Object.hasOwn(item, 'receiverThreads')) {
     // Desktop adds a cache of loaded child threads to the official wire item.

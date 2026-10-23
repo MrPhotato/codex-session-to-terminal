@@ -254,6 +254,49 @@ function displayItems() {
   ];
 }
 
+test('Desktop compaction metadata preserves the official marker across history and live updates', async () => {
+  const p = projection(), source = await resumeFixture();
+  const marker = { type: 'contextCompaction', id: 'compacted' };
+  for (const completed of [false, true]) {
+    const item = { ...marker, completed, source: 'automatic' };
+    const thread = structuredClone(source.thread); thread.turns[0].items.push(item);
+    const original = structuredClone(thread);
+    assert.deepEqual(p.projectResponse('thread/resume', { ...source, thread }).thread.turns[0].items.at(-1), marker);
+    assert.deepEqual(p.projectResponse('thread/read', { thread }).thread.turns[0].items.at(-1), marker);
+    assert.deepEqual(p.projectResponse('thread/items/list', { data: [{ turnId: 'native-turn', item }], nextCursor: null }).data[0].item, marker);
+    for (const method of ['item/started', 'item/completed']) {
+      const time = method === 'item/started' ? { startedAtMs: 1792490894000 } : { completedAtMs: 1792490895000 };
+      assert.deepEqual(p.projectNotification({ method, params: { threadId, turnId: 'native-turn', item, ...time } }).params.item, marker);
+    }
+    assert.deepEqual(thread, original);
+  }
+  for (const extra of [{ completed: null }, { completed: 'true' }, { source: {} },
+    { source: '' }, { source: 'x'.repeat(65) }, { source: 'bad\nsource' }, { future: true }]) {
+    assert.throws(() => p.projectNotification({ method: 'item/started', params: { threadId,
+      turnId: 'native-turn', startedAtMs: 1792490894000, item: { ...marker, ...extra } } }));
+  }
+});
+
+test('compaction followed by a fresh resume and new output survives real proxy sockets', { timeout: 10000 }, async t => {
+  const state = stateFixture(), f = await setup(t, {}, state);
+  await f.resume();
+  const item = { type: 'contextCompaction', id: 'compacted', completed: true, source: 'automatic' };
+  state.turnHistory.history.entitiesByKey.turn.items.push(item);
+  const notification = once(f.socket, 'message');
+  for (const socket of f.sockets) socket.send(JSON.stringify({ method: 'item/completed',
+    params: { threadId, turnId: 'native-turn', item, completedAtMs: 1792490895000 } }));
+  assert.equal(JSON.parse((await notification)[0]).params.item.type, 'contextCompaction');
+  f.socket.close(); await once(f.socket, 'close');
+  f.socket = await f.connect();
+  const resumed = await f.resume();
+  assert.deepEqual(resumed.result.thread.turns[0].items.at(-1), { type: 'contextCompaction', id: 'compacted' });
+  const continued = once(f.socket, 'message');
+  for (const socket of f.sockets) socket.send(JSON.stringify({ method: 'item/agentMessage/delta',
+    params: { threadId, turnId: 'native-turn', itemId: 'native-assistant', delta: 'Continued in Desktop.' } }));
+  assert.equal(JSON.parse((await continued)[0]).params.delta, 'Continued in Desktop.');
+  assert.equal(f.proxy.records.projectionFailed, undefined);
+});
+
 test('Desktop child-thread caches are omitted without losing collaboration history or mutating the snapshot', async () => {
   const source = await resumeFixture(), p = projection(), collab = displayItems().at(-1);
   for (const receiverThreads of [[], [{ threadId: otherThreadId, thread: null }],

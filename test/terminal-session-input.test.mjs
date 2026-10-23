@@ -81,6 +81,24 @@ test('readonly permits only pages, endpoints, wheels and its explicit toolbar ac
   f.input.push(`\u009d${click}\u009c`); assert.equal(f.clicks, 1);
 });
 
+test('readonly selection and copy remain local and cannot be triggered from paste or control strings', () => {
+  const events = [];
+  const input = createTerminalSessionInput({ mode: 'readonly', onSelectionMouse: event => events.push(event),
+    onCopySelection: () => events.push('copy'), onClearSelection: () => events.push('clear') });
+  input.setLayout({ cols: 80, rows: 24, button: { left: 60, right: 80, enabled: true } });
+  const gesture = mouse(0, 2, 3) + mouse(32, 9, 4) + mouse(0, 9, 4, 'm') + '\u0003' + mouse(2, 9, 4);
+  for (const wrapped of [`${E}[200~${gesture}${E}[201~`, `${E}]0;${gesture}\u0007`, `${E}P${gesture}${E}\\`]) {
+    for (const byte of Buffer.from(wrapped)) assert.equal(input.push(Buffer.from([byte])).length, 0);
+    assert.deepEqual(events, []);
+  }
+  for (const byte of Buffer.from(gesture)) assert.equal(input.push(Buffer.from([byte])).length, 0);
+  assert.deepEqual(events, [
+    { x: 2, y: 3, release: false, drag: false }, { x: 9, y: 4, release: false, drag: true },
+    { x: 9, y: 4, release: true, drag: false }, 'copy', 'copy',
+  ]);
+  input.push(E); assert.equal(input.flushEscape().length, 0); assert.equal(events.at(-1), 'clear');
+});
+
 test('bare local Esc uses explicit disambiguation; readonly never forwards it', () => {
   const f = setup(); assert.equal(f.input.push(E).length, 0); assert.equal(f.input.pendingEscape, true);
   assert.equal(f.input.flushEscape().toString(), E); assert.equal(f.input.pendingEscape, false);

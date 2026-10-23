@@ -894,3 +894,37 @@ identities still block navigation or return, and a native Back refusal retains
 the attachment. These are automated behavioral checks; physical focus switching
 during a new cold-owner connection still needs live acceptance. The change is
 loaded by new terminals and does not require restarting Desktop or the tray.
+
+## Compaction recovery and visible-text copying (23 October 2026)
+
+The user accepted the focus fix, then reported two cloud viewers stuck at
+"Automatic reconnect could not restore this session" after continuing in
+Desktop. Background snapshots confirmed both failures. Independent read-only
+attachments reproduced the same cause: Desktop contextCompaction records carry
+`completed` and `source` fields outside the pinned official wire item's id/type
+shape. The proxy rejected the live marker and every later full resume containing
+it. Those two display/lifecycle fields are now validated and omitted from the
+wire clone; the original marker, IDs and actual lifecycle events are retained.
+Unknown fields and malformed metadata still fail closed.
+
+Both real affected histories then passed full resume and a second connection
+through the Windows proxy, with zero projection errors. A real-socket regression
+also covers compaction, reconnection and subsequent assistant deltas. This does
+not claim recovery from every possible upstream disconnection or format change.
+
+Read-only mouse capture previously swallowed body drag gestures. The wrapper
+now handles visible-body selection itself, leaving the original CLI and its
+input restrictions intact. It snapshots displayed cells while selected, supports
+reverse and multiline ranges and whole wide characters, and uses Ctrl+C or a
+right click to copy. Esc, paging and resize release selection. The bounded
+Windows clipboard writer passes UTF-16LE text to clip.exe over stdin, without
+a shell, clipboard reads or a resident helper. Child OSC clipboard commands,
+pasted controls, sending and interruption remain blocked. A footer explains the
+copy gestures; native Shift+drag selection also remains available.
+
+All 527 JavaScript tests passed. Hidden test-owned ConPTY viewers then ran the
+installed, unmodified Windows CLI against both affected native IDs and displayed
+the expected content, session titles and read-only banner in 3035 ms and 2064 ms.
+Those measurements start with an explicit, already known native ID; they do not
+include automatic cloud discovery. Only the test viewers and followers closed.
+Physical drag/copy acceptance remains separate from these automated checks.

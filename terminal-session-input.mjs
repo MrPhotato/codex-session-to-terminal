@@ -5,7 +5,8 @@ const PASTE_END = Buffer.from('\u001b[201~');
 
 // Byte-preserving local input with one owned toolbar hit target. Unknown local
 // keys are not re-encoded as Unicode. Only mouse coordinates are translated.
-export function createTerminalSessionInput({ mode = 'local', onToolbarClick, toolbarRows = 1 } = {}) {
+export function createTerminalSessionInput({ mode = 'local', onToolbarClick, toolbarRows = 1,
+  onSelectionMouse, onCopySelection, onClearSelection } = {}) {
   if (!['local', 'readonly'].includes(mode)) throw new TypeError('Invalid terminal mode.');
   const readonly = mode === 'readonly', filter = createCloudReadonlyInputFilter();
   let state = 'ground', sequence = [], stringEsc = false, stringOsc = false, pasteEnd = 0, utf8C1Prefix = false;
@@ -17,6 +18,7 @@ export function createTerminalSessionInput({ mode = 'local', onToolbarClick, too
     if (!event) return;
     const button = Number(event[1]), x = Number(event[2]), y = Number(event[3]), release = event[4] === 'm';
     if (!x || !y || x > layout.cols || y > layout.rows || button > 65535) { pressed = null; return; }
+    if (readonly && release && button === 0) onSelectionMouse?.({ x, y, release: true, drag: false });
     if (toolbarRows && y <= toolbarRows) {
       if (!readonly && bodyPressed && release) {
         bodyPressed = false;
@@ -32,6 +34,10 @@ export function createTerminalSessionInput({ mode = 'local', onToolbarClick, too
     }
     // A toolbar press followed by a body release is not a body gesture either.
     if (pressed !== null) { pressed = null; return; }
+    if (readonly && !release && [0, 32].includes(button)) {
+      onSelectionMouse?.({ x, y, release: false, drag: button === 32 }); return;
+    }
+    if (readonly && button === 2 && !release) { onCopySelection?.(); return; }
     if (!bodyMouse && !readonly) return;
     if (!readonly && (button & 96) === 0) bodyPressed = !release;
     output.push(...Buffer.from(`\u001b[<${button};${x};${y - toolbarRows}${event[4]}`));
@@ -65,6 +71,7 @@ export function createTerminalSessionInput({ mode = 'local', onToolbarClick, too
     flushEscape() {
       if (state !== 'escape' || sequence.length !== 1) return Buffer.alloc(0);
       state = 'ground'; sequence = [];
+      if (readonly) onClearSelection?.();
       return readonly ? Buffer.alloc(0) : Buffer.from([ESC]);
     },
     push(input) {
@@ -109,6 +116,7 @@ export function createTerminalSessionInput({ mode = 'local', onToolbarClick, too
           output.push(byte); state = 'string'; stringOsc = byte === 157; stringEsc = false;
         } else if (utf8C1Prefix && byte === 155) { sequence = [byte]; state = 'csi'; }
         else if (byte === ESC) { state = 'escape'; sequence = [ESC]; sequenceGeneration = generation; }
+        else if (readonly && byte === 3) onCopySelection?.();
         else output.push(byte);
         utf8C1Prefix = byte === 194;
       }

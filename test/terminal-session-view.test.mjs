@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
-import { runTerminalSessionView, CLOUD_READONLY_BANNER } from '../terminal-session-view.mjs';
+import { runTerminalSessionView, CLOUD_READONLY_BANNER, copyTerminalText } from '../terminal-session-view.mjs';
 import { runCloudReadonlyView } from '../cloud-readonly-view.mjs';
 
 const require = createRequire(import.meta.url), { Terminal } = require('@xterm/headless');
@@ -62,6 +62,56 @@ test('cloud wrapper adds the toolbar while preserving the readonly banner and in
   assert.equal(f.child.writes.map(String).join(''), `${E}[5~`);
   f.click(); await until(() => f.frames.some(frame => frame.navigation === 'opened'));
   assert.equal(f.child.writes.map(String).join(''), `${E}[5~`); await f.stop();
+});
+
+test('cloud drag selection copies complete wide characters and freezes visible text until cleared', async t => {
+  const copied = [], f = fixture({ runner: runCloudReadonlyView, copySelection: async text => copied.push(text) });
+  t.after(() => f.stop());
+  f.child.data(nativeScreen(15, '中文🙂ABC'));
+  await until(() => f.frames.at(-1)?.lines[1] === '中文🙂ABC');
+  assert.ok(f.output.text.includes(`${E}[?1002h`));
+  f.input.emit('data', `${E}[<0;2;2M${E}[<32;8;2M${E}[<0;8;2m`);
+  await until(() => f.frames.at(-1).selectionActive);
+  f.child.data(`${E}[1;1HUpdated text`);
+  await delay(20);
+  assert.equal(f.frames.at(-1).lines[1], '中文🙂ABC');
+  f.input.emit('data', '\u0003');
+  await until(() => copied.length === 1);
+  assert.deepEqual(copied, ['中文🙂ABC']);
+  assert.deepEqual(f.child.writes, []);
+  f.input.emit('data', E);
+  await until(() => !f.frames.at(-1).selectionActive && f.frames.at(-1).lines[1].startsWith('Updated text'));
+  assert.deepEqual(f.child.writes, []);
+});
+
+test('cloud reverse multiline selection uses screen rows and right-click; navigation and resize clear it', async t => {
+  const copied = [], f = fixture({ runner: runCloudReadonlyView, copySelection: async text => copied.push(text) });
+  t.after(() => f.stop());
+  f.child.data(nativeScreen(15, 'ABC\r\n第二行'));
+  await until(() => f.frames.at(-1)?.lines[2] === '第二行');
+  const drag = () => f.input.emit('data', `${E}[<0;4;3M${E}[<32;2;2M${E}[<0;2;2m`);
+  drag(); f.input.emit('data', `${E}[<2;4;3M`);
+  await until(() => copied.length === 1);
+  assert.deepEqual(copied, ['BC\r\n第二']);
+  f.input.emit('data', `${E}[6~`);
+  await until(() => !f.frames.at(-1).selectionActive);
+  assert.equal(f.child.writes.map(String).join(''), `${E}[6~`);
+  drag(); await until(() => f.frames.at(-1).selectionActive);
+  f.output.columns = 90; f.output.emit('resize');
+  await until(() => !f.frames.at(-1).selectionActive);
+  f.input.emit('data', '\u0003'); await delay(10);
+  assert.equal(copied.length, 1);
+});
+
+test('Windows clipboard helper sends only selected Unicode text over stdin without a shell', async () => {
+  let invocation, bytes;
+  const child = new EventEmitter(); child.stdin = new EventEmitter(); child.kill = () => {};
+  child.stdin.end = value => { bytes = value; queueMicrotask(() => child.emit('close', 0)); };
+  await copyTerminalText('中文🙂\r\n$() & test', { systemRoot: 'C:\\Windows', spawnClipboard: (...args) => { invocation = args; return child; } });
+  assert.equal(invocation[0], 'C:\\Windows\\System32\\clip.exe');
+  assert.deepEqual(invocation[1], []); assert.equal(invocation[2].shell, false); assert.equal(invocation[2].windowsHide, true);
+  assert.equal(bytes.toString('utf16le'), '\ufeff中文🙂\r\n$() & test');
+  await assert.rejects(copyTerminalText('x', { systemRoot: 'relative' }), { code: 'CLIPBOARD_UNAVAILABLE' });
 });
 
 test('local and cloud preserve parsed CLI session titles across fragmented OSC sequences', async () => {
