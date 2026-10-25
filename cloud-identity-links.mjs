@@ -144,7 +144,7 @@ function userTail(read) {
 }
 
 // Text is used only to nominate a candidate for read-only ID verification.
-// Never persist this suggestion or display its history before the native
+// Never cache this suggestion or display its history before the native
 // snapshot confirms the latest frontend client message ID. Scan every listed
 // candidate; a failed read or a duplicate leaves the association unresolved.
 export async function discoverCloudCandidate(list, frontend, read, { signal, timeoutMs = 18000 } = {}) {

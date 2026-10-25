@@ -9,6 +9,7 @@ import { createDesktopButtonAction } from './desktop-button-action.mjs';
 import { matchCloudThreadByTitle, matchesCloudTitleRead } from './cloud-title-selection.mjs';
 import { decodeDesktopTitleContext, recheckDesktopTitleContext } from './desktop-title-context.mjs';
 import { attachCloudWithPageRecovery } from './cloud-owner-activation.mjs';
+import { createRecentCloudStore, recentCloudCandidate, tryRecentCloudCandidate } from './cloud-recent-candidates.mjs';
 import { parseCloudIdentityLinks, findLinkedCloudCandidate, frontendMessageEvidence, matchesCloudMessageEvidence, cloudFrontends, discoverCloudCandidate } from './cloud-identity-links.mjs';
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -100,6 +101,15 @@ export function cloudCliLaunch(options, attachment, home, environment = process.
 }
 
 export async function runCloudTerminal(options, dependencies = {}) {
+  try { return await cloudTerminalAttempt(options,dependencies); }
+  catch(error) {
+    // The first attempt has released every owned resource before retrying.
+    if(error.code !== 'RECENT_CLOUD_IDENTITY_CHANGED') throw error;
+    return cloudTerminalAttempt(options,{...dependencies,useRecent:false});
+  }
+}
+
+async function cloudTerminalAttempt(options, dependencies) {
   const { input = process.stdin, output = process.stdout, processEvents = process, signal,
     lease = createTrayLease(options.controlDirectory), createPresence = createSessionPresence,
     createHome = () => mkdtemp(join(options.controlDirectory, 'cloud-view-')),
@@ -112,6 +122,7 @@ export async function runCloudTerminal(options, dependencies = {}) {
     attachWithRecovery = attachCloudWithPageRecovery,
     loadIdentityLinks = loadCloudIdentityLinks,
     discoverCandidate = discoverCloudCandidate,
+    createRecentStore = createRecentCloudStore, useRecent = true,
     environment = process.env,
     now = Date.now,
     writeDiagnostics = (home, value) => writeFile(join(home, 'diagnostics.json'), JSON.stringify(value, null, 2) + '\n', { flag: 'w' }),
@@ -164,7 +175,8 @@ export async function runCloudTerminal(options, dependencies = {}) {
     diagnosticHome = home;
     await wait(adopt(measure('createReader', () => createReader({ backendPath: options.backendPath, nodePath: process.execPath,
       powershellPath: options.powershellPath, cwd: home })), value => { reader = value; }));
-    let original, recoveryPlan, messageEvidence, frontendTitle;
+    const recentStore = createRecentStore(options.controlDirectory,{now});
+    let original, recoveryPlan, messageEvidence, frontendTitle, pendingRecent, usedRecent = false;
     const threadId = options.threadId ?? await wait((async () => {
       const list = await measure('listConversations', () => reader.listConversations({ limit: 50 }));
       const titleContext = options.titleContext;
@@ -224,10 +236,31 @@ export async function runCloudTerminal(options, dependencies = {}) {
       const matching = titleContext && !localTitleConflict ? frontends.filter(row => row.title === titleContext.title) : [];
       const resolveFrontend = async frontend => {
         output.write(chinese() ? '正在核对聊天与云端执行记录…\n' : 'Checking the chat against cloud execution records…\n');
-        const result = await measure('discoverIdentity', () => discoverCandidate(list, frontend,
-          (target, args) => reader.readConversation(target, args), { signal: lifetime.signal }));
+        const read = (target,args)=>reader.readConversation(target,args);
+        let result;
+        if(useRecent) {
+          try {
+            const record = await recentStore.get(frontend.id);
+            if(record) {
+              result = await measure('recentCandidate',()=>tryRecentCloudCandidate(list,frontend,read,record,
+                async (target,evidence,signal)=>{
+                  let probe;
+                  try {
+                    probe=await createAttachment({threadId:target,powershellPath:options.powershellPath,
+                      bridgeHome:home,persistedThread:true,signal});
+                    return matchesCloudMessageEvidence(probe.state,target,evidence);
+                  } finally { await probe?.close(); }
+                },{signal:lifetime.signal,now}));
+              if(!result)await recentStore.delete(frontend.id);
+            }
+          } catch { /* A cache or probe failure uses normal discovery. */ }
+        }
+        usedRecent=Boolean(result);
+        if(!result) result = await measure('discoverIdentity', () => discoverCandidate(list, frontend,
+          read, { signal: lifetime.signal }));
         if (lifetime.signal.aborted) throw fail('ABORTED');
         if (!result) return null;
+        pendingRecent = usedRecent ? null : recentCloudCandidate(list,frontend.id,result.native.thread.id,result.evidence,now());
         original = result.native; messageEvidence = result.evidence; frontendTitle = result.title;
         if (titleContext && frontend.title === titleContext.title) {
           if (!await recheckTitleContext(titleContext, { signal: lifetime.signal })) throw fail('CLOUD_PAGE_CHANGED');
@@ -235,7 +268,7 @@ export async function runCloudTerminal(options, dependencies = {}) {
             linkedEvidence: messageEvidence, nativeTitle: original.thread.title ?? null };
         }
         diagnostics.candidateFound = true;
-        await publishDiagnostics('message-candidate');
+        await publishDiagnostics(usedRecent ? 'recent-candidate' : 'message-candidate');
         return original.thread.id;
       };
       if (!candidate && matching.length === 1) {
@@ -271,7 +304,12 @@ export async function runCloudTerminal(options, dependencies = {}) {
         });
         if (setupError) { await value.close(); throw setupError; }
         if (messageEvidence && !matchesCloudMessageEvidence(value.state, threadId, messageEvidence)) {
-          await value.close(); throw fail('CLOUD_IDENTITY_UNCONFIRMED');
+          await value.close();
+          if(usedRecent) {
+            try { await recentStore.delete(messageEvidence.frontendId); } catch {}
+            throw fail('RECENT_CLOUD_IDENTITY_CHANGED');
+          }
+          throw fail('CLOUD_IDENTITY_UNCONFIRMED');
         }
         identityVerified = true;
         updatePresence(value.state); presence.updateStatus(value.status);
@@ -296,6 +334,7 @@ export async function runCloudTerminal(options, dependencies = {}) {
       },
     }), value => { attachment = value; }));
     check(); if (stopError) throw stopError;
+    if(pendingRecent) { try { await recentStore.put(pendingRecent); } catch {} }
     const launch = cloudCliLaunch({ ...options, threadId }, attachment, home, environment);
     buttonAction = createButtonAction({ ...options, threadId, hostId: 'durable' }, { signal: lifetime.signal });
     viewer = Promise.resolve(runView(launch, { input, output, signal: lifetime.signal, displayTitle,

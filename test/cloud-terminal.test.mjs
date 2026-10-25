@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { resolve } from 'node:path';
 import { cloudCandidates, cloudCliLaunch, cloudTerminalError, parseCloudArguments, runCloudTerminal } from '../cst-cloud-terminal.mjs';
 import { attachCloudWithPageRecovery } from '../cloud-owner-activation.mjs';
+import { recentCloudCandidate } from '../cloud-recent-candidates.mjs';
 
 const id = '11111111-2222-4333-8444-555555555555';
 const options = {threadId:id,controlDirectory:resolve('control'),powershellPath:resolve('pwsh.exe'),backendPath:resolve('backend.exe'),cliPath:resolve('codex.exe')};
@@ -13,6 +14,7 @@ function fixture(extra={}) {
   const attachment={endpoint:'ws://127.0.0.1:33333/',token:'a'.repeat(64),state:{id,hostId:'durable',latestThreadSettings:{cwd:'/cloud/not-a-local-directory'}},manifest:{readonly:true,hostId:'durable',send:false,steer:false,queue:false,interrupt:false},close:async()=>calls.push('attachment.close')};
   const reader={listConversations:async()=>({threads:[{id,kind:'codex',hostId:'durable',title:'Online'}]}),readConversation:async(target,args)=>{calls.push({read:target,args});return {thread:{id:target,kind:'codex',hostId:'durable'},turns:[]};},close:async()=>calls.push('reader.close')};
   const dependencies={lease:()=>true,createHome:async()=>home,createReader:async()=>reader,writeDiagnostics:async()=>{},loadIdentityLinks:async()=>[],
+    createRecentStore:()=>({get:async()=>null,put:async()=>{},delete:async()=>{}}),
     chooseThread:async rows=>{calls.push({candidates:rows});return rows.find(row=>row.hostId==='durable').id;},
     createAttachment:async args=>{calls.push({attachment:args});return attachment;},
     createPresence:()=>({updateState(){},updateStatus(){},close:async()=>calls.push('presence.close')}),
@@ -365,6 +367,53 @@ test('missing title offers frontend names and manual frontend choice uses the sa
   f.dependencies.discoverCandidate=async()=>({native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'});
   f.dependencies.attachWithRecovery=async args=>{assert.equal(args.plan,undefined);return args.connect();};
   assert.equal(await runCloudTerminal({...options,threadId:undefined},f.dependencies),0);
+});
+
+test('successful full discovery enrolls only after native proof; repeat opens skip broad discovery',async()=>{
+  let stored,scans=0;
+  const store={get:async()=>stored,put:async row=>{stored=row;},delete:async()=>{stored=undefined;}};
+  const make=()=>{
+    const f=linkedFixture();f.dependencies.loadIdentityLinks=async()=>[];
+    f.dependencies.createRecentStore=()=>store;
+    f.dependencies.discoverCandidate=async()=>{scans++;return {native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'};};
+    return f;
+  };
+  const cold=make();assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:cold.source},cold.dependencies),0);
+  assert.equal(scans,1);assert.ok(stored);const savedAt=stored.savedAt;
+  const warm=make();assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:warm.source},warm.dependencies),0);
+  assert.equal(scans,1);assert.equal(stored.savedAt,savedAt,'cache hits never extend the initial scan lifetime');
+  assert.equal(warm.calls.filter(call=>call.attachment).length,2,'preflight proof then display attachment');
+  const wrong=make();stored=undefined;wrong.attachment.state.turnHistory.history.entitiesByKey.latest.items[0].clientId=laterMessageId;
+  await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext:wrong.source},wrong.dependencies),{code:'CLOUD_IDENTITY_UNCONFIRMED'});
+  assert.equal(stored,undefined);
+});
+
+test('a rejected recent probe falls back without navigating or publishing the rejected history',async()=>{
+  const f=linkedFixture();f.dependencies.loadIdentityLinks=async()=>[];
+  const list=await f.reader.listConversations();let scans=0,deletes=0,attempts=0;
+  const memo=recentCloudCandidate(list,frontendId,id,{frontendId,clientMessageId:linkedMessageId},100000);
+  f.dependencies.createRecentStore=()=>({get:async()=>memo,put:async()=>{},delete:async()=>{deletes++;}});
+  f.dependencies.discoverCandidate=async()=>{scans++;return {native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'};};
+  f.dependencies.createAttachment=async()=>{
+    attempts++;if(attempts===1)throw Object.assign(Error('no owner'),{code:'NO_OWNER'});return f.attachment;
+  };
+  assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
+  assert.equal(scans,1);assert.equal(deletes,1);assert.equal(attempts,2);
+});
+
+test('a receipt changing after a recent probe closes the attempt then performs fresh discovery once',async()=>{
+  const f=linkedFixture();f.dependencies.loadIdentityLinks=async()=>[];
+  const list=await f.reader.listConversations();let memo=recentCloudCandidate(list,frontendId,id,{frontendId,clientMessageId:linkedMessageId},100000);
+  let attempts=0,scans=0;
+  f.dependencies.createRecentStore=()=>({get:async()=>memo,put:async()=>{},delete:async()=>{memo=null;}});
+  f.dependencies.discoverCandidate=async()=>{scans++;assert.ok(f.calls.includes('reader.close'));return {native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'};};
+  f.dependencies.createAttachment=async()=>{
+    attempts++;const state=structuredClone(f.attachment.state);
+    if(attempts===2)state.turnHistory.history.entitiesByKey.latest.items[0].clientId=laterMessageId;
+    return {...f.attachment,state};
+  };
+  assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
+  assert.equal(scans,1);assert.equal(attempts,3);assert.equal(f.calls.filter(call=>call.launch).length,1);
 });
 
 test('a local chat sharing the frontend title cannot trigger automatic cloud discovery', async()=>{

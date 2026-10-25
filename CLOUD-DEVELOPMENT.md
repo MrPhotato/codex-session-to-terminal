@@ -975,3 +975,39 @@ added; the earlier cache idea remains unimplemented.
 All 533 JavaScript tests passed, including sparse/exhausted summaries, a
 different or truncated latest input, and overlapping linked reads that cannot
 open a viewer before both complete.
+
+## Recent successful candidate fast path (25 October 2026)
+
+Repeated opens can reuse a successful candidate for up to five minutes within
+the same tray run. Enrollment happens only after full discovery and canonical
+native receipt validation, not when text comparison merely suggests a match.
+The bounded, atomically replaced store holds at most 64 entries in 32 KiB:
+frontend/native/client-message IDs, a directory digest and the original time.
+It contains no titles, message text or credentials. Hits do not renew expiry.
+
+Every attempt still obtains a fresh directory. The competing cloud candidates
+must be idle with unchanged update stamps; added/removed/renamed candidates,
+conflicting directory rows, missing metadata or another active cloud candidate
+disable reuse. The current frontend receipt must equal the enrolled receipt.
+Two parallel summary reads are followed by a short-lived, read-only native
+attachment that verifies the canonical latest message. Only then can normal
+display attachment proceed, which verifies the receipt again. A failed probe
+discards the hint and runs full discovery. A receipt changing between probe and
+display closes the attempt and retries full discovery once, with reuse disabled.
+An unavailable owner also falls back to the existing recovery path. No cache
+failure publishes candidate history or grants cloud control/navigation access.
+
+This is a bounded optimization of the existing recent/pinned directory scope,
+not proof of account-wide fork uniqueness. Cache lookup requires idle update
+metadata for competitors; it does not cache or relax the final message proof.
+The six-second fast-path deadline bounds added wait if it cannot verify a hint.
+There is no new resident process and no Desktop/global configuration change.
+
+All 541 JavaScript tests and the complete Windows/PowerShell suite passed.
+Tests cover repeated opens without a broad scan, enrollment after proof,
+non-renewing expiry, changed messages/directories, active competitors, timeout,
+late completion, malformed/unwritable storage and cleanup before retry.
+The first live benchmark attempt stopped at NO_OWNER before CLI display because
+the chosen cloud execution view was not attached in Desktop. No page was switched
+and no message was sent; an end-to-end performance claim remains pending a live
+owner and the user's installed shortcut acceptance.

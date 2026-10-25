@@ -19,7 +19,7 @@ $sourceFiles = @(
     'CST-Panel.ps1', 'CST-Panel.cs', 'CST-TrayMenu.cs', 'CST-Presence.ps1', 'cst-presence.mjs',
     'desktop-ipc.mjs', 'cst-transport.mjs', 'cst-state.mjs', 'cst-queue.mjs', 'cst-terminal.mjs', 'LEGACY.md',
     'cst-native-terminal.mjs', 'native-cli-bridge.mjs', 'readonly-metadata.mjs',
-    'cst-cloud-terminal.mjs', 'cloud-desktop-reader.mjs', 'cloud-app-tools.mjs', 'cloud-owner-activation.mjs', 'cloud-identity-links.mjs',
+    'cst-cloud-terminal.mjs', 'cloud-desktop-reader.mjs', 'cloud-app-tools.mjs', 'cloud-owner-activation.mjs', 'cloud-identity-links.mjs', 'cloud-recent-candidates.mjs',
     'cloud-native-cli-bridge.mjs', 'cloud-native-metadata.mjs', 'cloud-windows-attachment.mjs',
     'cloud-windows-cli-proxy.mjs', 'cloud-readonly-view.mjs', 'cloud-readonly-input.mjs', 'CLOUD-DEVELOPMENT.md',
     'terminal-session-view.mjs', 'terminal-session-input.mjs', 'desktop-session-navigation.mjs', 'desktop-button-action.mjs', 'Focus-Desktop.ps1',
