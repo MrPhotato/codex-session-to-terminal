@@ -198,9 +198,9 @@ test('a warm linked session verifies current message identity before display eve
 });
 
 test('a previously linked cloud session accepts current completed/live receipts after Continue',async()=>{
-  for(const status of ['completed','inProgress']) for(const continuation of [false,true]) {
+  for(const status of ['completed','interrupted','inProgress']) for(const continuation of [false,true]) {
     const f=linkedFixture(),state=f.attachment.state,turn=state.turnHistory.history.entitiesByKey.latest;
-    state.historyMode='legacy';state.threadRuntimeStatus={type:status==='completed'?'idle':'active'};
+    state.historyMode='legacy';state.threadRuntimeStatus={type:status==='inProgress'?'active':'idle'};
     turn.turnId='eeeeeeee-3333-4333-8333-333333333333';turn.turnStartedAtMs=1792739849168;
     turn.status=status;turn.params={};delete turn.itemsPagination;
     if(continuation){

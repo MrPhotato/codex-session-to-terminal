@@ -267,6 +267,12 @@ for (const discovered of [false, true]) test(`a live canonical ${discovered ? 'd
   assert.equal(matchesCloudMessageEvidence(make(), nativeId, ev), true);
   const completed = make(); completed.threadRuntimeStatus.type = 'idle'; latestTurn(completed).status = 'completed';
   assert.equal(matchesCloudMessageEvidence(completed, nativeId, ev), true);
+  const interrupted = make(); interrupted.threadRuntimeStatus.type = 'idle'; latestTurn(interrupted).status = 'interrupted';
+  assert.equal(matchesCloudMessageEvidence(interrupted, nativeId, ev), true);
+  interrupted.threadRuntimeStatus.type = 'active';
+  assert.equal(matchesCloudMessageEvidence(interrupted, nativeId, ev), false);
+  interrupted.threadRuntimeStatus.type = 'idle'; latestTurn(interrupted).items[0].clientId = otherId;
+  assert.equal(matchesCloudMessageEvidence(interrupted, nativeId, ev), false);
   for (const change of [s => s.threadRuntimeStatus.type = 'idle', s => latestTurn(s).status = 'completed',
     s => latestTurn(s).turnId = 'optimistic', s => latestTurn(s).params = null, s => delete latestTurn(s).turnStartedAtMs,
     s => latestTurn(s).params.clientUserMessageId = otherId,

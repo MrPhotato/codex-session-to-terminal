@@ -100,7 +100,7 @@ export function matchesCloudMessageEvidence(state, nativeId, evidence) {
   if (!latest || latest !== canonicalLatest || !Array.isArray(latest.items)) return false;
   const liveTurn = state.historyMode === 'legacy' &&
     (latest.status === 'inProgress' && state.threadRuntimeStatus?.type === 'active' ||
-      latest.status === 'completed' && state.threadRuntimeStatus?.type === 'idle') &&
+      ['completed', 'interrupted'].includes(latest.status) && state.threadRuntimeStatus?.type === 'idle') &&
     Number.isSafeInteger(latest.turnStartedAtMs) && latest.turnStartedAtMs > 0 &&
     id(latest.turnId) && object(latest.params) && latest.itemsPagination == null;
   if (!liveTurn && (latest.itemsPagination?.hasLoadedOldest !== true || latest.itemsPagination.evicted === true ||
@@ -110,7 +110,8 @@ export function matchesCloudMessageEvidence(state, nativeId, evidence) {
   // checked link and a new discovery can receive live canonical turns, including
   // additional user input admitted into the same native turn after Continue.
   const ids = users.map(item => id(item.clientId));
-  // Live turns may lack paginated-history fields and a root receipt. The latest
+  // Live/just-ended legacy turns (including interrupted ones) may lack
+  // paginated-history fields and a root receipt. The latest
   // admitted ID must still match a fresh frontend read, and a supplied root ID
   // must agree with the first input. Incomplete paginated turns remain rejected.
   const rootId = latest.params?.clientUserMessageId;
