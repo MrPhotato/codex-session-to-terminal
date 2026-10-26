@@ -1011,3 +1011,32 @@ The first live benchmark attempt stopped at NO_OWNER before CLI display because
 the chosen cloud execution view was not attached in Desktop. No page was switched
 and no message was sent; an end-to-end performance claim remains pending a live
 owner and the user's installed shortcut acceptance.
+
+
+## 2026-10-26: cache-free startup and actual-terminal observations
+
+The five-minute recent-candidate optimization above is retired. Production no
+longer imports or distributes its module. Existing private files are untouched;
+they are not consumed or updated by the new launcher.
+
+Exact native-ID entry points now validate the authoritative durable read-only
+attachment directly, without creating an app-tools executor or reading a redundant
+summary. Frontend-title discovery retains its current title/content/message-ID
+checks. Bounded inspection of Desktop 26.1016.8622.0 did not establish a new usable
+external frontend-to-executor relation API. The `codexThreadId` occurrences
+examined belong to executor metadata and realtime voice handoff tracking, not a
+general external mapping API. No speculative probing was added to startup.
+
+The lookup-only executor closes asynchronously after the native CLI's first
+rendered composer; final cleanup joins the same promise. It is not needed for
+ongoing native streaming, paging or the independent return-to-Desktop button.
+A failed archival/cleanup result is diagnostic and cannot close a healthy viewer.
+
+`terminal-status.json` is one sanitized, coalesced snapshot per actual terminal,
+including local terminals. No server, control endpoint, transcript, title,
+conversation ID or connection credential is added. It is a last observation,
+not a process heartbeat or a claim that the window is foreground. First rendered
+composer and first verified content are deliberately separate measurements.
+
+The paired benchmark, limitations and resource checks are recorded in
+[CLOUD-FIRST-OPEN-ACCEPTANCE.md](CLOUD-FIRST-OPEN-ACCEPTANCE.md).

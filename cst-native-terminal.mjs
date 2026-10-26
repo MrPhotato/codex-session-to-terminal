@@ -1,10 +1,12 @@
 import { EventEmitter } from 'node:events';
+import { mkdtemp } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createTrayLease } from './cst-terminal.mjs';
 import { createSessionPresence } from './cst-presence.mjs';
 import { createDesktopButtonAction } from './desktop-button-action.mjs';
+import { createTerminalDiagnostics } from './terminal-diagnostics.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -86,11 +88,11 @@ export function shouldWaitOnError(error, interactive, check) {
 
 // Preserve the launcher's existing child lifecycle while the original CLI is
 // hosted below a one-row toolbar. The host alone owns its ConPTY and terminal.
-export function createTerminalViewChild(launch, { runView, onOpenDesktop, input = process.stdin, output = process.stdout }) {
+export function createTerminalViewChild(launch, { runView, onOpenDesktop, onFrame, input = process.stdin, output = process.stdout }) {
   const child = new EventEmitter(), lifetime = new AbortController();
   child.kill = () => { lifetime.abort(); return true; };
   Promise.resolve().then(() => runView(launch, { mode: 'local', input, output,
-    signal: lifetime.signal, onOpenDesktop })).then(
+    signal: lifetime.signal, onOpenDesktop, onFrame })).then(
     code => child.emit('exit', code, null),
     () => child.emit('error', failure('CLI_START_FAILED')));
   return child;
@@ -115,6 +117,8 @@ export async function runNativeTerminal(options, {
   spawnFn,
   runView = async (launch, settings) => (await import('./terminal-session-view.mjs')).runTerminalSessionView(launch, settings),
   createButtonAction = createDesktopButtonAction,
+  createDiagnostics = createTerminalDiagnostics,
+  createDiagnosticHome = () => mkdtemp(join(options.controlDirectory,'terminal-view-')),
   input = process.stdin, output = process.stdout,
   environment = process.env,
   processEvents = process,
@@ -128,8 +132,13 @@ export async function runNativeTerminal(options, {
   if (signal?.aborted) throw failure('ABORTED');
   const abort = new AbortController();
   const presence = createPresence({ controlDirectory: options.controlDirectory, threadId: options.threadId });
-  let bridge, child, childDone, buttonAction, childExited = false, closed = false, timer, stopError, closePromise;
-  let initializing = true, initialStatusError;
+  let bridge, child, childDone, buttonAction, observation, terminalError, childExited = false, closed = false, timer, stopError, closePromise;
+  let initializing = true, initialStatusError, lastFrame;
+  const diagnosticSetup = Promise.resolve().then(createDiagnosticHome).then(directory => {
+    observation = createDiagnostics(directory, {mode:'local'});
+    observation?.update({phase:bridge ? 'connected' : 'attaching', identityVerified:Boolean(bridge?.status?.ready)});
+    if (lastFrame) observation?.frame(lastFrame);
+  }).catch(()=>{});
   let rejectStopped;
   const stopped = new Promise((_, reject) => { rejectStopped = reject; });
   // Every phase races this promise; attach a handler now for synchronous events.
@@ -203,13 +212,14 @@ export async function runNativeTerminal(options, {
     checkLease();
     if (stopError) throw stopError;
     if (bridge.status?.ready !== true) throw failure('OWNER_UNAVAILABLE');
+    observation?.update({phase:'connected',identityVerified:true});
     presence.updateState(bridge.state);
     presence.updateStatus(bridge.status);
     if (options.check) return 0;
     const launch = nativeCliLaunch(options, bridge, environment);
     buttonAction = createButtonAction({ ...options, hostId: 'local' }, { signal: abort.signal });
     try { child = spawnFn ? spawnFn(launch.executable, launch.args, launch.options)
-      : createTerminalViewChild(launch, { runView, input, output, onOpenDesktop: () => buttonAction.open() }); }
+      : createTerminalViewChild(launch, { runView, input, output, onFrame:frame=>{lastFrame=frame;observation?.frame(frame);}, onOpenDesktop: () => buttonAction.open() }); }
     catch { throw failure('CLI_START_FAILED'); }
     childDone = new Promise((resolve, reject) => {
       child.once('error', () => { childExited = true; reject(failure('CLI_START_FAILED')); });
@@ -219,9 +229,12 @@ export async function runNativeTerminal(options, {
       });
     });
     childDone.catch(() => {});
-    return await Promise.race([childDone, stopped]);
+    const exitCode=await Promise.race([childDone, stopped]);observation?.update({exitCode});return exitCode;
+  } catch(error) {
+    terminalError=error;throw error;
   } finally {
-    await close();
+    try { await close(); }
+    finally { await diagnosticSetup; await observation?.close(terminalError?{phase:'failed',errorCode:terminalError.code}:undefined); lastFrame=undefined; }
   }
 }
 

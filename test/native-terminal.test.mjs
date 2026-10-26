@@ -29,6 +29,7 @@ function fixture(extra = {}) {
     close: async () => { calls.presenceClose++; },
   };
   const dependencies = {
+    createDiagnosticHome:async()=>undefined, createDiagnostics:()=>undefined,
     createBridge: async value => { bridgeArgs = value; return bridge; },
     lease: () => leaseValid, createPresence: () => presence,
     spawnFn: (...values) => { calls.spawn.push(values); return child; },
@@ -41,6 +42,16 @@ function fixture(extra = {}) {
     get bridgeArgs() { return bridgeArgs; },
     expireLease() { leaseValid = false; tick?.(); }, tick() { tick?.(); } };
 }
+
+test('slow diagnostic setup does not delay bridge or CLI startup and still closes its snapshot',async()=>{
+  let finishSetup,closed=0;
+  const f=fixture({createDiagnosticHome:()=>new Promise(resolve=>{finishSetup=resolve;}),
+    createDiagnostics:()=>({update(){},frame(){},async close(){closed++;}})});
+  const running=runNativeTerminal(options,f.dependencies);
+  await nextTurn();assert.equal(f.calls.spawn.length,1);
+  f.child.emit('exit',0,null);finishSetup(undefined);
+  assert.equal(await running,0);assert.equal(closed,1);
+});
 
 test('native arguments preserve the old required entry contract and default official executable', () => {
   assert.deepEqual(parseNativeArguments(args), { ...options, cliPath: defaultCliPath });

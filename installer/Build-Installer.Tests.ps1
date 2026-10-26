@@ -90,7 +90,8 @@ param([string]$OutputDirectory)
     foreach ($cloudFile in @('cst-cloud-terminal.mjs','cloud-owner-activation.mjs','cloud-desktop-reader.mjs','cloud-app-tools.mjs','cloud-native-cli-bridge.mjs','cloud-native-metadata.mjs','cloud-windows-attachment.mjs','cloud-windows-cli-proxy.mjs','cloud-readonly-view.mjs','cloud-readonly-input.mjs','CLOUD-DEVELOPMENT.md','terminal-session-view.mjs','terminal-session-input.mjs','desktop-session-navigation.mjs','desktop-button-action.mjs','Focus-Desktop.ps1')) {
         if (!$include.Contains($cloudFile) -or !(Test-Path -LiteralPath (Join-Path $payload $cloudFile))) { throw "Cloud read-only file missing: $cloudFile" }
     }
-    foreach ($researchFile in @('cloud-interrupt-control.mjs','cloud-interrupt-controller.mjs','cloud-history-refresh.mjs')) {
+    if (!$include.Contains('terminal-diagnostics.mjs') -or !(Test-Path -LiteralPath (Join-Path $payload 'terminal-diagnostics.mjs'))) { throw 'Terminal diagnostics missing.' }
+    foreach ($researchFile in @('cloud-interrupt-control.mjs','cloud-interrupt-controller.mjs','cloud-history-refresh.mjs','cloud-recent-candidates.mjs')) {
         if ($include.Contains($researchFile)) { throw "Experimental cloud control entered the product: $researchFile" }
     }
 

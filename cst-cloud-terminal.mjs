@@ -9,7 +9,7 @@ import { createDesktopButtonAction } from './desktop-button-action.mjs';
 import { matchCloudThreadByTitle, matchesCloudTitleRead } from './cloud-title-selection.mjs';
 import { decodeDesktopTitleContext, recheckDesktopTitleContext } from './desktop-title-context.mjs';
 import { attachCloudWithPageRecovery } from './cloud-owner-activation.mjs';
-import { createRecentCloudStore, recentCloudCandidate, tryRecentCloudCandidate } from './cloud-recent-candidates.mjs';
+import { createTerminalDiagnostics } from './terminal-diagnostics.mjs';
 import { parseCloudIdentityLinks, findLinkedCloudCandidate, frontendMessageEvidence, matchesCloudMessageEvidence, cloudFrontends, discoverCloudCandidate } from './cloud-identity-links.mjs';
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -101,12 +101,7 @@ export function cloudCliLaunch(options, attachment, home, environment = process.
 }
 
 export async function runCloudTerminal(options, dependencies = {}) {
-  try { return await cloudTerminalAttempt(options,dependencies); }
-  catch(error) {
-    // The first attempt has released every owned resource before retrying.
-    if(error.code !== 'RECENT_CLOUD_IDENTITY_CHANGED') throw error;
-    return cloudTerminalAttempt(options,{...dependencies,useRecent:false});
-  }
+  return cloudTerminalAttempt(options,dependencies);
 }
 
 async function cloudTerminalAttempt(options, dependencies) {
@@ -122,9 +117,10 @@ async function cloudTerminalAttempt(options, dependencies) {
     attachWithRecovery = attachCloudWithPageRecovery,
     loadIdentityLinks = loadCloudIdentityLinks,
     discoverCandidate = discoverCloudCandidate,
-    createRecentStore = createRecentCloudStore, useRecent = true,
+    createDiagnostics = createTerminalDiagnostics,
     environment = process.env,
     now = Date.now,
+    clock = () => performance.now(),
     writeDiagnostics = (home, value) => writeFile(join(home, 'diagnostics.json'), JSON.stringify(value, null, 2) + '\n', { flag: 'w' }),
     writeConnectionDiagnostics = (home, stage, value) => writeFile(join(home, `${stage}-diagnostics.json`), JSON.stringify(value, null, 2) + '\n', { flag: 'w' }),
   } = dependencies;
@@ -132,27 +128,46 @@ async function cloudTerminalAttempt(options, dependencies) {
   if (signal?.aborted) throw fail('ABORTED');
   const lifetime = new AbortController();
   const startedAt = now();
+  const startedClock = clock();
   const diagnostics = { version: 1, titleContextPresent: Boolean(options.titleContext), explicitThread: Boolean(options.threadId),
     contextAgeAtStartMs: Number.isSafeInteger(options.titleContext?.capturedAt) ? startedAt - options.titleContext.capturedAt : null,
     timingsMs: {}, candidateFound: null, readMatches: null, recheckPassed: null, recheckDetail: null, contextAgeAtRecheckMs: null,
     failedStage: null, outcome: 'pending' };
-  let diagnosticHome, diagnosticsWritten = false;
+  let diagnosticHome, diagnosticsWritten = false, observation, readerCleanup, firstScreen = false;
+  let queries = 0, queryErrors = 0, terminalError;
   const measure = async (stage, action) => {
-    const began = now();
+    const began = clock();
     try { return await action(); }
     catch (error) { diagnostics.failedStage = stage; throw error; }
-    finally { diagnostics.timingsMs[stage] = Math.max(0, now() - began); }
+    finally {
+      diagnostics.timingsMs[stage] = Math.max(0, Math.round(clock() - began));
+      observation?.update({timingsMs:{[stage]:Math.round(diagnostics.timingsMs[stage])}});
+    }
   };
   const publishDiagnostics = async outcome => {
     if (!diagnosticHome || diagnosticsWritten) return;
     diagnosticsWritten = true;
     diagnostics.outcome = outcome;
-    diagnostics.elapsedMs = Math.max(0, now() - startedAt);
+    diagnostics.elapsedMs = Math.max(0, Math.round(clock() - startedClock));
     // A bounded, content-free snapshot is written once before the picker/view.
     // Diagnostic I/O cannot turn a usable session into a connection failure.
     try { await writeDiagnostics(diagnosticHome, diagnostics); } catch {}
   };
   let reader, attachment, presence, viewer, buttonAction, closed = false, timer, stopError, rejectStopped;
+  const readConversation = async (...args) => {
+    queries++;observation?.update({queries});
+    try { return await reader.readConversation(...args); }
+    catch(error) { queryErrors++;observation?.update({queryErrors});throw error; }
+  };
+  const releaseReader = () => {
+    if(!reader)return readerCleanup;
+    const owned=reader;reader=undefined;
+    observation?.update({reader:'closing'});
+    readerCleanup=Promise.resolve().then(()=>owned.close()).then(
+      result=>observation?.update({reader:result?.helperMayExist?'cleanup-failed':'released'}),
+      ()=>observation?.update({reader:'cleanup-failed'}));
+    return readerCleanup;
+  };
   const stopped = new Promise((_, reject) => { rejectStopped = reject; });
   stopped.catch(() => {});
   const stop = error => { if (!stopError && !closed) { stopError = error; lifetime.abort(); rejectStopped(error); } };
@@ -174,10 +189,15 @@ async function cloudTerminalAttempt(options, dependencies) {
       : (chinese() ? '正在读取云端会话列表…\n' : 'Loading online sessions…\n'));
     const home = await wait(measure('createHome', createHome));
     diagnosticHome = home;
-    await wait(adopt(measure('createReader', () => createReader({ backendPath: options.backendPath, nodePath: process.execPath,
-      powershellPath: options.powershellPath, cwd: home })), value => { reader = value; }));
-    const recentStore = createRecentStore(options.controlDirectory,{now});
-    let original, recoveryPlan, messageEvidence, frontendTitle, pendingRecent, usedRecent = false;
+    observation = createDiagnostics(home,{mode:'readonly'});
+    // Exact native links are validated by the authoritative durable follower.
+    // They do not need a catalog executor or an extra summary round trip.
+    if(!options.threadId) {
+      await wait(adopt(measure('createReader', () => createReader({ backendPath: options.backendPath, nodePath: process.execPath,
+        powershellPath: options.powershellPath, cwd: home })), value => { reader = value; }));
+      observation.update({reader:'active',phase:'listing'});
+    }
+    let original, recoveryPlan, messageEvidence, frontendTitle;
     const threadId = options.threadId ?? await wait((async () => {
       const list = await measure('listConversations', () => reader.listConversations({ limit: 50 }));
       const titleContext = options.titleContext;
@@ -186,8 +206,8 @@ async function cloudTerminalAttempt(options, dependencies) {
       if (link) {
         try {
           const [frontend, native] = await measure('linkedRead', () => Promise.all([
-            reader.readConversation(link.frontendId, { turnLimit: 1, maxOutputCharsPerItem: 1 }),
-            reader.readConversation(link.nativeId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }),
+            readConversation(link.frontendId, { turnLimit: 1, maxOutputCharsPerItem: 1 }),
+            readConversation(link.nativeId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }),
           ]));
           const evidence = frontendMessageEvidence(frontend, link.frontendId, titleContext.title);
           if (evidence && native.thread?.id === link.nativeId && native.thread.kind === 'codex' && native.thread.hostId === 'durable' &&
@@ -207,7 +227,7 @@ async function cloudTerminalAttempt(options, dependencies) {
       diagnostics.candidateFound = Boolean(candidate);
       if (candidate) {
         try {
-          const read = await measure('candidateRead', () => reader.readConversation(candidate, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }));
+          const read = await measure('candidateRead', () => readConversation(candidate, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }));
           diagnostics.readMatches = matchesCloudTitleRead(read, candidate, titleContext.title);
           if (diagnostics.readMatches) {
             diagnostics.contextAgeAtRecheckMs = now() - titleContext.capturedAt;
@@ -238,27 +258,10 @@ async function cloudTerminalAttempt(options, dependencies) {
       const matching = titleContext && !localTitleConflict ? frontends.filter(row => row.title === titleContext.title) : [];
       const resolveFrontend = async frontend => {
         output.write(chinese() ? '正在核对聊天与云端执行记录…\n' : 'Checking the chat against cloud execution records…\n');
-        const read = (target,args)=>reader.readConversation(target,args);
+        observation.update({phase:'matching'});
+        const read = (target,args)=>readConversation(target,args);
         let result;
-        if(useRecent) {
-          try {
-            const record = await recentStore.get(frontend.id);
-            if(record) {
-              result = await measure('recentCandidate',()=>tryRecentCloudCandidate(list,frontend,read,record,
-                async (target,evidence,signal)=>{
-                  let probe;
-                  try {
-                    probe=await createAttachment({threadId:target,powershellPath:options.powershellPath,
-                      bridgeHome:home,persistedThread:true,signal});
-                    return matchesCloudMessageEvidence(probe.state,target,evidence);
-                  } finally { await probe?.close(); }
-                },{signal:lifetime.signal,now}));
-              if(!result)await recentStore.delete(frontend.id);
-            }
-          } catch { /* A cache or probe failure uses normal discovery. */ }
-        }
-        usedRecent=Boolean(result);
-        if(!result) {
+        {
           let discoveryDiagnostics;
           try {
             result = await measure('discoverIdentity', () => discoverCandidate(list, frontend,
@@ -269,7 +272,6 @@ async function cloudTerminalAttempt(options, dependencies) {
         }
         if (lifetime.signal.aborted) throw fail('ABORTED');
         if (!result) return null;
-        pendingRecent = usedRecent ? null : recentCloudCandidate(list,frontend.id,result.native.thread.id,result.evidence,now());
         original = result.native; messageEvidence = result.evidence; frontendTitle = result.title;
         if (titleContext && frontend.title === titleContext.title) {
           if (!await recheckTitleContext(titleContext, { signal: lifetime.signal, refreshAge: true })) throw fail('CLOUD_PAGE_CHANGED');
@@ -277,7 +279,7 @@ async function cloudTerminalAttempt(options, dependencies) {
             linkedEvidence: messageEvidence, nativeTitle: original.thread.title ?? null };
         }
         diagnostics.candidateFound = true;
-        await publishDiagnostics(usedRecent ? 'recent-candidate' : 'message-candidate');
+        await publishDiagnostics('message-candidate');
         return original.thread.id;
       };
       if (!candidate && matching.length === 1) {
@@ -295,11 +297,11 @@ async function cloudTerminalAttempt(options, dependencies) {
     })());
     await publishDiagnostics('explicit-thread');
     if (!UUID.test(threadId ?? '')) throw fail('INVALID_ARGUMENTS');
-    original ??= await wait(reader.readConversation(threadId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }));
-    if (original.thread?.id !== threadId || original.thread.kind !== 'codex' || original.thread.hostId !== 'durable') throw fail('NOT_CLOUD_SESSION');
+    if(reader) original ??= await wait(readConversation(threadId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }));
+    if (original && (original.thread?.id !== threadId || original.thread.kind !== 'codex' || original.thread.hostId !== 'durable')) throw fail('NOT_CLOUD_SESSION');
     presence = createPresence({ controlDirectory: options.controlDirectory, threadId });
     output.write('Online Session Read Only for Terminal\n');
-    let identityVerified = !messageEvidence;
+    let identityVerified = false;
     const displayTitle = messageEvidence ? presenceTitle(frontendTitle) : undefined;
     const updatePresence = state => presence.updateState(displayTitle ? { ...state, title: displayTitle } : state);
     const connect = async () => {
@@ -312,12 +314,15 @@ async function cloudTerminalAttempt(options, dependencies) {
           onError: error => { if (ready) stop(error); else setupError ??= error; },
         });
         if (setupError) { await value.close(); throw setupError; }
+        if(value.state?.id!==threadId||value.state?.hostId!=='durable') {
+          await value.close();throw fail('NOT_CLOUD_SESSION');
+        }
+        if(value.manifest?.readonly!==true||value.manifest?.hostId!=='durable'||
+            ['send','steer','queue','interrupt'].some(key=>value.manifest[key]!==false)) {
+          await value.close();throw fail('READ_ONLY_REQUIRED');
+        }
         if (messageEvidence && !matchesCloudMessageEvidence(value.state, threadId, messageEvidence)) {
           await value.close();
-          if(usedRecent) {
-            try { await recentStore.delete(messageEvidence.frontendId); } catch {}
-            throw fail('RECENT_CLOUD_IDENTITY_CHANGED');
-          }
           throw fail('CLOUD_IDENTITY_UNCONFIRMED');
         }
         identityVerified = true;
@@ -326,12 +331,13 @@ async function cloudTerminalAttempt(options, dependencies) {
       } catch (error) { throw setupError ?? error; }
     };
     let recoveryDiagnostics;
-    try { await wait(adopt(attachWithRecovery({ connect, plan: recoveryPlan, signal: lifetime.signal,
+    observation.update({phase:'attaching'});
+    try { await wait(adopt(measure('attach', () => attachWithRecovery({ connect, plan: recoveryPlan, signal: lifetime.signal,
       onDiagnostic: value => { recoveryDiagnostics = value; },
       createNavigator: async navigateTargets => {
         // Release the initial read-only helper before starting a narrowly bound
         // one-page navigator. No extra executor is kept after the excursion.
-        const oldReader = reader; reader = undefined; await oldReader.close();
+        await releaseReader();
         return createReader({ backendPath: options.backendPath, nodePath: process.execPath,
           powershellPath: options.powershellPath, cwd: home, navigateTargets });
       },
@@ -344,17 +350,22 @@ async function cloudTerminalAttempt(options, dependencies) {
         };
         if (lines[phase]) output.write(lines[phase][chinese() ? 0 : 1] + '\n');
       },
-    }), value => { attachment = value; }));
+    })), value => { attachment = value; }));
     } finally {
       if (recoveryDiagnostics) { try { await writeConnectionDiagnostics(home, 'recovery', recoveryDiagnostics); } catch {} }
     }
     check(); if (stopError) throw stopError;
-    if(pendingRecent) { try { await recentStore.put(pendingRecent); } catch {} }
+    observation.update({phase:'connected',identityVerified:true});
     const launch = cloudCliLaunch({ ...options, threadId }, attachment, home, environment);
     buttonAction = createButtonAction({ ...options, threadId, hostId: 'durable' }, { signal: lifetime.signal });
     viewer = Promise.resolve(runView(launch, { input, output, signal: lifetime.signal, displayTitle,
+      onFrame: frame => observation.frame(frame),
+      onReady: () => { if(!firstScreen) { firstScreen=true;void releaseReader(); } },
       onOpenDesktop: () => buttonAction.open() }));
-    return await wait(viewer);
+    const exitCode = await wait(viewer);
+    observation.update({exitCode});return exitCode;
+  } catch(error) {
+    terminalError=error;observation?.update({phase:'failed',errorCode:error?.code});throw error;
   } finally {
     await publishDiagnostics('selection-failed');
     closed = true; clearInterval(timer); lifetime.abort();
@@ -364,7 +375,9 @@ async function cloudTerminalAttempt(options, dependencies) {
     // and release its child before main is allowed to end this wrapper process.
     try { await viewer; } catch {}
     try { await attachment?.close(); }
-    finally { try { await reader?.close(); } finally { try { await buttonAction?.close(); } finally { await presence?.close(); } } }
+    finally { try { await releaseReader(); } finally { try { await buttonAction?.close(); } finally {
+      try { await presence?.close(); } finally { await observation?.close(terminalError?{phase:'failed',errorCode:terminalError.code}:undefined); }
+    } } }
   }
 }
 

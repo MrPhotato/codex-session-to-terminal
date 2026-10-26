@@ -4,7 +4,6 @@ import { EventEmitter } from 'node:events';
 import { resolve } from 'node:path';
 import { cloudCandidates, cloudCliLaunch, cloudTerminalError, parseCloudArguments, runCloudTerminal } from '../cst-cloud-terminal.mjs';
 import { attachCloudWithPageRecovery } from '../cloud-owner-activation.mjs';
-import { recentCloudCandidate } from '../cloud-recent-candidates.mjs';
 
 const id = '11111111-2222-4333-8444-555555555555';
 const options = {threadId:id,controlDirectory:resolve('control'),powershellPath:resolve('pwsh.exe'),backendPath:resolve('backend.exe'),cliPath:resolve('codex.exe')};
@@ -15,7 +14,7 @@ function fixture(extra={}) {
   const reader={listConversations:async()=>({threads:[{id,kind:'codex',hostId:'durable',title:'Online'}]}),readConversation:async(target,args)=>{calls.push({read:target,args});return {thread:{id:target,kind:'codex',hostId:'durable'},turns:[]};},close:async()=>calls.push('reader.close')};
   const dependencies={lease:()=>true,createHome:async()=>home,createReader:async()=>reader,writeDiagnostics:async()=>{},loadIdentityLinks:async()=>[],
     writeConnectionDiagnostics:async()=>{},
-    createRecentStore:()=>({get:async()=>null,put:async()=>{},delete:async()=>{}}),
+    createDiagnostics:()=>({update(){},frame(){},async close(){}}),
     chooseThread:async rows=>{calls.push({candidates:rows});return rows.find(row=>row.hostId==='durable').id;},
     createAttachment:async args=>{calls.push({attachment:args});return attachment;},
     createPresence:()=>({updateState(){},updateStatus(){},close:async()=>calls.push('presence.close')}),
@@ -110,7 +109,7 @@ test('selection then authoritative durable read precedes readonly attachment and
 });
 test('a mismatched/local read never opens an attachment or CLI',async()=>{
   const f=fixture();f.reader.readConversation=async()=>({thread:{id,kind:'codex',hostId:'local'}});
-  await assert.rejects(runCloudTerminal(options,f.dependencies),{code:'NOT_CLOUD_SESSION'});
+  await assert.rejects(runCloudTerminal({...options,threadId:undefined},f.dependencies),{code:'NOT_CLOUD_SESSION'});
   assert.equal(f.calls.some(x=>x.attachment||x.launch),false);assert.ok(f.calls.includes('reader.close'));
 });
 test('cancellation while attachment opens cleans the late result and cannot start a viewer',async()=>{
@@ -124,7 +123,7 @@ test('cancellation while attachment opens cleans the late result and cannot star
 });
 test('viewer failure revokes attachment and never sends cloud interruption',async()=>{
   const f=fixture({runView:async()=>{throw new Error('display failed');}});
-  await assert.rejects(runCloudTerminal(options,f.dependencies),/display failed/);
+  await assert.rejects(runCloudTerminal({...options,threadId:undefined},f.dependencies),/display failed/);
   assert.deepEqual(f.calls.slice(-3),['attachment.close','reader.close','presence.close']);
   assert.equal(f.dependencies.processEvents.listenerCount('SIGINT'),0);
 });
@@ -136,7 +135,7 @@ test('cancellation waits for viewer cleanup before releasing resources or return
     started();await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));
     await new Promise(resolve=>{finishCleanup=resolve;});f.calls.push('view.cleaned');return 130;
   }});
-  let settled=false;const running=runCloudTerminal(options,f.dependencies).finally(()=>{settled=true;});
+  let settled=false;const running=runCloudTerminal({...options,threadId:undefined},f.dependencies).finally(()=>{settled=true;});
   await entered;controller.abort();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(settled,false);assert.equal(f.calls.includes('attachment.close'),false);
   finishCleanup();await assert.rejects(running,{code:'ABORTED'});
@@ -333,7 +332,7 @@ test('explicit or manual selection with no source context never guesses a return
     const f=fixture({createAttachment:async()=>{throw Object.assign(new Error('missing'),{code:'NO_OWNER'});}});
     f.dependencies.createReader=async args=>{reads++;assert.equal(args.navigateTargets,undefined);return f.reader;};
     await assert.rejects(runCloudTerminal(selected,f.dependencies),{code:'NO_OWNER'});
-    assert.equal(reads,1);
+    assert.equal(reads,selected.threadId?0:1);
   }
 });
 
@@ -360,7 +359,7 @@ test('explicit thread and tray menu do not consult window title',async()=>{
 
 test('title diagnostics identify recheck fallback with timings and no session content',async()=>{
   let clock=100000;const snapshots=[];
-  const f=fixture({now:()=>clock,createHome:async()=>{clock+=3;return home;},
+  const f=fixture({now:()=>clock,clock:()=>clock,createHome:async()=>{clock+=3;return home;},
     writeDiagnostics:async(directory,value)=>{assert.equal(directory,home);snapshots.push(structuredClone(value));},
     recheckTitleContext:async(_context,{onDiagnostic})=>{clock+=30;onDiagnostic({reason:'expired',elapsedMs:30,title:'private title',token:'private token'});return false;},
     chooseThread:async()=>{assert.equal(snapshots.length,1,'diagnosis must exist while picker is visible');return id;}});
@@ -420,51 +419,66 @@ test('missing title offers frontend names and manual frontend choice uses the sa
   assert.equal(await runCloudTerminal({...options,threadId:undefined},f.dependencies),0);
 });
 
-test('successful full discovery enrolls only after native proof; repeat opens skip broad discovery',async()=>{
-  let stored,scans=0;
-  const store={get:async()=>stored,put:async row=>{stored=row;},delete:async()=>{stored=undefined;}};
-  const make=()=>{
+test('each frontend open discovers afresh and rejects changed native proof before publication',async()=>{
+  let scans=0;
+  for(const mismatch of [false,false,true]) {
     const f=linkedFixture();f.dependencies.loadIdentityLinks=async()=>[];
-    f.dependencies.createRecentStore=()=>store;
     f.dependencies.discoverCandidate=async()=>{scans++;return {native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'};};
-    return f;
-  };
-  const cold=make();assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:cold.source},cold.dependencies),0);
-  assert.equal(scans,1);assert.ok(stored);const savedAt=stored.savedAt;
-  const warm=make();assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:warm.source},warm.dependencies),0);
-  assert.equal(scans,1);assert.equal(stored.savedAt,savedAt,'cache hits never extend the initial scan lifetime');
-  assert.equal(warm.calls.filter(call=>call.attachment).length,2,'preflight proof then display attachment');
-  const wrong=make();stored=undefined;wrong.attachment.state.turnHistory.history.entitiesByKey.latest.items[0].clientId=laterMessageId;
-  await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext:wrong.source},wrong.dependencies),{code:'CLOUD_IDENTITY_UNCONFIRMED'});
-  assert.equal(stored,undefined);
+    if(mismatch) {
+      f.attachment.state.turnHistory.history.entitiesByKey.latest.items[0].clientId=laterMessageId;
+      f.dependencies.createPresence=()=>({updateState:()=>assert.fail('unverified history published'),updateStatus(){},async close(){}});
+      await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),{code:'CLOUD_IDENTITY_UNCONFIRMED'});
+      assert.equal(f.calls.some(call=>call.launch),false);
+    } else assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
+  }
+  assert.equal(scans,3);
 });
 
-test('a rejected recent probe falls back without navigating or publishing the rejected history',async()=>{
-  const f=linkedFixture();f.dependencies.loadIdentityLinks=async()=>[];
-  const list=await f.reader.listConversations();let scans=0,deletes=0,attempts=0;
-  const memo=recentCloudCandidate(list,frontendId,id,{frontendId,clientMessageId:linkedMessageId},100000);
-  f.dependencies.createRecentStore=()=>({get:async()=>memo,put:async()=>{},delete:async()=>{deletes++;}});
-  f.dependencies.discoverCandidate=async()=>{scans++;return {native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'};};
-  f.dependencies.createAttachment=async()=>{
-    attempts++;if(attempts===1)throw Object.assign(Error('no owner'),{code:'NO_OWNER'});return f.attachment;
-  };
-  assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
-  assert.equal(scans,1);assert.equal(deletes,1);assert.equal(attempts,2);
+test('exact native links skip the catalog executor and validate durable identity before publication',async()=>{
+  for(const invalid of [null,'id','host','readonly','manifest-host','send']) {
+    const f=fixture({createReader:()=>assert.fail('an exact native ID needs no query executor')});
+    if(invalid==='id')f.attachment.state.id=frontendId;
+    if(invalid==='host')f.attachment.state.hostId='local';
+    if(invalid==='readonly')f.attachment.manifest.readonly=false;
+    if(invalid==='manifest-host')f.attachment.manifest.hostId='local';
+    if(invalid==='send')f.attachment.manifest.send=true;
+    if(invalid) {
+      f.dependencies.createPresence=()=>({updateState:()=>assert.fail('unverified history published'),updateStatus(){},async close(){}});
+      await assert.rejects(runCloudTerminal(options,f.dependencies),{code:['id','host'].includes(invalid)?'NOT_CLOUD_SESSION':'READ_ONLY_REQUIRED'});
+      assert.equal(f.calls.some(call=>call.launch),false);
+      assert.ok(f.calls.includes('attachment.close'));
+    } else assert.equal(await runCloudTerminal(options,f.dependencies),0);
+  }
 });
 
-test('a receipt changing after a recent probe closes the attempt then performs fresh discovery once',async()=>{
-  const f=linkedFixture();f.dependencies.loadIdentityLinks=async()=>[];
-  const list=await f.reader.listConversations();let memo=recentCloudCandidate(list,frontendId,id,{frontendId,clientMessageId:linkedMessageId},100000);
-  let attempts=0,scans=0;
-  f.dependencies.createRecentStore=()=>({get:async()=>memo,put:async()=>{},delete:async()=>{memo=null;}});
-  f.dependencies.discoverCandidate=async()=>{scans++;assert.ok(f.calls.includes('reader.close'));return {native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'};};
-  f.dependencies.createAttachment=async()=>{
-    attempts++;const state=structuredClone(f.attachment.state);
-    if(attempts===2)state.turnHistory.history.entitiesByKey.latest.items[0].clientId=laterMessageId;
-    return {...f.attachment,state};
+test('first screen releases reader once without blocking viewing and terminal exit waits for cleanup',async()=>{
+  const f=fixture(),events=[];let finishCleanup,finishView,viewArgs;
+  f.dependencies.createDiagnostics=()=>({update:value=>events.push(value),frame(){},async close(){events.push('diagnostics.closed');}});
+  f.reader.close=()=>{events.push('reader.close');return new Promise(resolve=>{finishCleanup=resolve;});};
+  f.dependencies.runView=(_launch,args)=>{viewArgs=args;return new Promise(resolve=>{finishView=resolve;});};
+  let settled=false;const running=runCloudTerminal({...options,threadId:undefined},f.dependencies).then(()=>{settled=true;});
+  while(!viewArgs)await new Promise(r=>setImmediate(r));
+  assert.equal(events.includes('reader.close'),false);
+  viewArgs.onReady();viewArgs.onReady();await new Promise(r=>setImmediate(r));
+  assert.equal(events.filter(x=>x==='reader.close').length,1);
+  assert.equal(settled,false);assert.equal(f.calls.includes('attachment.close'),false);
+  finishView(0);await new Promise(r=>setImmediate(r));assert.equal(settled,false);
+  finishCleanup();await running;
+  assert.ok(events.some(x=>x.reader==='released'));assert.equal(events.at(-1),'diagnostics.closed');
+});
+
+test('reader cleanup failure is observed without closing an established viewer',async()=>{
+ for(const rejected of [true,false]) {
+  const events=[],f=fixture();
+  f.dependencies.createDiagnostics=()=>({update:value=>events.push(value),frame(){},async close(){}});
+  f.reader.close=async()=>{if(rejected)throw Error('archive unavailable');return {helperMayExist:true,archived:false};};
+  f.dependencies.runView=async(_launch,args)=>{
+    args.onReady();await new Promise(r=>setImmediate(r));
+    assert.equal(f.calls.includes('attachment.close'),false);
+    assert.ok(events.some(x=>x.reader==='cleanup-failed'));return 0;
   };
-  assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
-  assert.equal(scans,1);assert.equal(attempts,3);assert.equal(f.calls.filter(call=>call.launch).length,1);
+  assert.equal(await runCloudTerminal({...options,threadId:undefined},f.dependencies),0);
+ }
 });
 
 test('a local chat sharing the frontend title cannot trigger automatic cloud discovery', async()=>{

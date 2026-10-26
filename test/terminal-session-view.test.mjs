@@ -42,6 +42,18 @@ function fixture(options = {}, launchExtra = {}) {
 const nativeScreen = (rows, body = 'History') => `${E}[?1049h${E}[2J${E}[1;1H${body}${E}[${rows - 3};1H› Ask Codex to do anything` +
   `${E}[${rows - 1};1HModel · cwd${E}[${rows};1H? shortcuts${E}[${rows - 3};3H${E}[?25h`;
 
+test('readiness fires once after the native composer is rendered, not on a loading frame',async t=>{
+  let ready=0;
+  const f=fixture({runner:runCloudReadonlyView,onReady:()=>{ready++;}});t.after(()=>f.stop());
+  f.child.data(`${E}[2J${E}[1;1HLoading`);
+  await until(()=>f.frames.length>0);assert.equal(ready,0);
+  f.child.data(nativeScreen(15));await until(()=>ready===1);
+  assert.equal(f.frames.at(-1).composerReady,true);
+  assert.equal(f.frames.at(-1).bodyVisible,true);
+  f.output.columns=90;f.output.emit('resize');f.child.data(nativeScreen(15,'Updated'));
+  await until(()=>f.frames.at(-1).lines[1]==='Updated');assert.equal(ready,1);
+});
+
 test('local reserves one toolbar row and retains full original CLI body, args, cursor and color', async () => {
   const args = ['-c', 'custom.setting=true', '--remote', 'ws://127.0.0.1:12345', 'resume', 'bound-thread'];
   const f = fixture({}, { args }); f.child.data(nativeScreen(15, `${E}[38;2;1;2;3m中文 body${E}[0m`));
