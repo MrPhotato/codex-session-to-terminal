@@ -295,9 +295,38 @@ test('unknown return result preserves the usable terminal and is never retried',
 
 test('discovery retries are bounded and failures still return to an untouched original page', async () => {
   const f = fixture(); f.options.connect = async () => { f.attempts++; throw failure('NO_OWNER'); };
-  await assert.rejects(attachCloudWithPageRecovery(f.options, f.dependencies), { code: 'NO_OWNER' });
-  assert.equal(f.attempts, 5);
+  const start = f.time, snapshots = [];
+  f.options.onDiagnostic = value => snapshots.push(value);
+  await assert.rejects(attachCloudWithPageRecovery(f.options, f.dependencies), { code: 'CLOUD_OWNER_NOT_READY' });
+  assert.equal(f.time - start, 25000);
+  assert.ok(f.attempts > 5 && f.attempts < 25);
+  assert.equal(snapshots[0].outcome, 'owner-not-ready');
+  assert.equal(snapshots[0].attempts.length, f.attempts - 1);
+  assert.equal(f.phases.filter(x => x === 'waiting-owner').length, 1);
   assert.deepEqual(f.calls.filter(call => call[0] === 'navigate' || call[0] === 'back'), [['navigate', threadId], ['back']]);
+});
+
+test('a slow cold owner can become ready beyond four probes without repeating navigation', async () => {
+  const f = linkedFixture(), start = f.time;
+  f.options.connect = async () => {
+    f.attempts++;
+    if (f.time - start < 18000) throw failure('NO_OWNER');
+    return f.resource;
+  };
+  assert.equal(await attachCloudWithPageRecovery(f.options, f.dependencies), f.resource);
+  assert.ok(f.time - start >= 18000 && f.time - start < 25000);
+  assert.ok(f.attempts > 5);
+  assert.deepEqual(f.calls.filter(x => ['navigate', 'back'].includes(x[0])), [['navigate', threadId], ['back']]);
+});
+
+test('cancelling a cold-owner retry stops further probes and does not navigate back', async () => {
+  const f = linkedFixture();
+  f.options.connect = async () => { f.attempts++; throw failure('NO_OWNER'); };
+  f.dependencies.pause = async ms => { f.time += ms; if (f.attempts > 4) f.controller.abort(); };
+  await assert.rejects(attachCloudWithPageRecovery(f.options, f.dependencies), { code: 'ABORTED' });
+  assert.equal(f.attempts, 5);
+  assert.equal(f.calls.some(x => x[0] === 'back'), false);
+  assert.deepEqual(f.calls.at(-1), ['close']);
 });
 
 test('non-discovery failures are not retried and retain their original error after returning', async () => {

@@ -132,10 +132,10 @@ export function cloudFrontends(list) {
   return [...records.values()];
 }
 
-function userTail(read) {
+function userTail(read, count = 2) {
   if (read?.page?.order !== 'newest_first' || !Array.isArray(read.turns)) return [];
   const users = read.turns.slice().reverse().flatMap(turn => turn.items ?? []).filter(item => item.type === 'userMessage');
-  return users.slice(-2).map(item => {
+  return users.slice(-count).map(item => {
     if (item.truncated || item.textTruncated || !Array.isArray(item.content) || item.content.length !== 1) return null;
     const part = item.content[0];
     return part.type === 'text' && typeof part.text === 'string' && part.text.length > 0 &&
@@ -147,63 +147,91 @@ function userTail(read) {
 // Never cache this suggestion or display its history before the native
 // snapshot confirms the latest frontend client message ID. Scan every listed
 // candidate; a failed read or a duplicate leaves the association unresolved.
-export async function discoverCloudCandidate(list, frontend, read, { signal, timeoutMs = 18000 } = {}) {
+export async function discoverCloudCandidate(list, frontend, read, { signal, timeoutMs = 45000, onDiagnostic = () => {} } = {}) {
+  const startedAt = performance.now();
+  const diagnostics = { version: 1, outcome: 'pending', candidates: 0, scanned: 0, matches: 0 };
   const controller = new AbortController();
   const cancelled = () => controller.abort();
   signal?.addEventListener('abort', cancelled, { once: true });
   let timer;
   const stopped = new Promise((_, reject) => {
-    const abort = () => reject(Object.assign(new Error('CLOUD_IDENTITY_UNCONFIRMED'), { code: 'CLOUD_IDENTITY_UNCONFIRMED' }));
+    const abort = () => reject(Object.assign(new Error('CLOUD_DISCOVERY_TIMEOUT'), {
+      code: signal?.aborted ? 'ABORTED' : 'CLOUD_DISCOVERY_TIMEOUT' }));
     controller.signal.addEventListener('abort', abort, { once: true });
     timer = setTimeout(() => controller.abort(), timeoutMs);
     if (signal?.aborted) controller.abort();
   });
   const operation = async () => {
+    if (controller.signal.aborted) return null;
     // Most summaries expose one user message per turn. Read only the two turns
     // needed for nomination; retain the previous four-turn bound for summaries
     // that contain intermediate turns with no user input.
     const readTail = async (threadId, options = {}, expectedTail) => {
       let result = await read(threadId, { ...options, turnLimit: 2, maxOutputCharsPerItem: 4096 });
-      const recent = userTail(result);
+      const recent = userTail(result, expectedTail?.length ?? 4);
       // Older turns cannot repair an already different (or truncated) latest
       // user input. Exhausted histories cannot provide an older input either.
       const mayMatch = !expectedTail || recent.length === 0 || recent.at(-1) === expectedTail.at(-1);
-      if (recent.length < 2 && mayMatch && result.page?.hasMore !== false && !controller.signal.aborted) {
+      const needsOlder = expectedTail ? recent.length < expectedTail.length :
+        recent.length < 2 || recent.every(Boolean) && recent.join('').length < 24;
+      if (needsOlder && mayMatch && result.page?.hasMore !== false && !controller.signal.aborted) {
         result = await read(threadId, { ...options, turnLimit: 4, maxOutputCharsPerItem: 4096 });
       }
       return result;
     };
     const source = await readTail(frontend.id);
     const evidence = frontendMessageEvidence(source, frontend.id, frontend.title);
-    const tail = userTail(source);
-    if (!evidence || tail.length !== 2 || tail.some(value => !value) || tail.join('').length < 24) return null;
+    let tail = userTail(source, 4);
+    // Short replies are common. Keep the smallest suffix of 2–4 complete
+    // inputs with enough text to nominate a candidate; native receipt proof is
+    // still mandatory before showing anything from that candidate.
+    while (tail.length > 2 && tail.slice(1).every(Boolean) && tail.slice(1).join('').length >= 24) tail = tail.slice(1);
+    if (!evidence || tail.length < 2 || tail.some(value => !value) || tail.join('').length < 24) {
+      diagnostics.outcome = 'invalid-source'; return null;
+    }
     const natives = new Map();
     for (const row of [...(list.pinnedThreads ?? []), ...(list.threads ?? [])]) {
       if (row?.kind !== 'codex' || row.hostId !== 'durable' || !id(row.id)) continue;
       natives.set(row.id, row);
     }
-    if (natives.size > 64) return null;
+    diagnostics.candidates = natives.size;
+    if (natives.size > 64) { diagnostics.outcome = 'too-many-candidates'; return null; }
     const rows = [...natives.values()], matches = [];
     let next = 0, invalid = false;
     const scan = async () => {
      while (next < rows.length && !controller.signal.aborted && !invalid) {
       const row = rows[next++];
       const native = await readTail(row.id, { hostId: 'durable' }, tail);
+      if (controller.signal.aborted) return;
+      diagnostics.scanned++;
       if (native.thread?.id !== row.id || native.thread.kind !== 'codex' || native.thread.hostId !== 'durable') { invalid = true; return; }
-      const other = userTail(native);
-      if (other.length === 2 && tail.every((value, index) => value === other[index])) {
+      const other = userTail(native, tail.length);
+      if (other.length === tail.length && tail.every((value, index) => value === other[index])) {
         matches.push({ native, evidence: { ...evidence, discovered: true }, title: frontend.title });
+        diagnostics.matches = matches.length;
       }
      }
     };
     // Share one official reader process; limit outstanding read-only RPCs.
     await Promise.all(Array.from({ length: Math.min(3, rows.length) }, scan));
-    if (invalid || matches.length !== 1 || controller.signal.aborted) return null;
+    if (invalid || matches.length !== 1 || controller.signal.aborted) {
+      diagnostics.outcome = invalid ? 'invalid-candidate' : matches.length > 1 ? 'ambiguous' : 'no-match'; return null;
+    }
     const match = matches[0];
     const fresh = await read(frontend.id, { turnLimit: 1, maxOutputCharsPerItem: 1 });
-    return frontendMessageEvidence(fresh, frontend.id, frontend.title)?.clientMessageId === evidence.clientMessageId ? match : null;
+    const confirmed = frontendMessageEvidence(fresh, frontend.id, frontend.title)?.clientMessageId === evidence.clientMessageId;
+    diagnostics.outcome = confirmed ? 'matched' : 'source-changed';
+    return confirmed ? match : null;
   };
   try { return await Promise.race([operation(), stopped]); }
-  catch { return null; }
-  finally { controller.abort(); clearTimeout(timer); signal?.removeEventListener('abort', cancelled); }
+  catch (error) {
+    if (controller.signal.aborted) {
+      diagnostics.outcome = signal?.aborted ? 'aborted' : 'timeout'; throw error;
+    }
+    diagnostics.outcome = 'read-failed'; return null;
+  }
+  finally {
+    controller.abort(); clearTimeout(timer); signal?.removeEventListener('abort', cancelled);
+    try { onDiagnostic({ ...diagnostics, elapsedMs: Math.round(performance.now() - startedAt) }); } catch {}
+  }
 }

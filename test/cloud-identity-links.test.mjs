@@ -179,10 +179,34 @@ test('discovery rejects duplicates, failed reads, truncated messages and stale f
 
 test('discovery is bounded and a late read cannot start scanning further chats', async () => {
   const f = discoveryFixture(); let resolveRead, calls = 0;
-  assert.equal(await discoverCloudCandidate(directory(), frontend(), () => { calls++; return new Promise(r => { resolveRead = r; }); }, { timeoutMs: 10 }), null);
+  const reports = [];
+  await assert.rejects(discoverCloudCandidate(directory(), frontend(), () => { calls++; return new Promise(r => { resolveRead = r; }); },
+    { timeoutMs: 10, onDiagnostic: value => reports.push(value) }), { code: 'CLOUD_DISCOVERY_TIMEOUT' });
+  assert.equal(reports[0].outcome, 'timeout');
   resolveRead(f.source);
   await new Promise(r => setTimeout(r, 10));
   assert.equal(calls, 1);
+});
+
+test('short recent replies expand the nomination suffix without accepting mismatched older text', async () => {
+  for (const different of [false, true]) {
+    const f = discoveryFixture(), calls = [];
+    const inputs = ['A sufficiently long earlier deployment question', 'Please go', 'y'];
+    const read = async (key, options) => {
+      calls.push({ key, limit: options.turnLimit });
+      const value = structuredClone(key === frontendId ? f.source : f.target);
+      value.page.hasMore = true;
+      value.turns = inputs.slice(-options.turnLimit).reverse().map((text, index) => ({ items: [{
+        type: 'userMessage', id: index === 0 ? clientMessageId : otherId,
+        content: [{ type: 'text', text: different && key === nativeId && text === inputs[0] ? 'Other unrelated older input' : text }],
+      }] }));
+      return value;
+    };
+    const result = await discoverCloudCandidate(directory(), frontend(), read);
+    assert.equal(result?.native.thread.id ?? null, different ? null : nativeId);
+    assert.deepEqual(calls.slice(0, 4), [{ key: frontendId, limit: 2 }, { key: frontendId, limit: 4 },
+      { key: nativeId, limit: 2 }, { key: nativeId, limit: 4 }]);
+  }
 });
 
 test('discovery reads two turns first and expands only summaries missing the second user message', async () => {

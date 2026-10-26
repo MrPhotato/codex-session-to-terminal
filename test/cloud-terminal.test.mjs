@@ -14,6 +14,7 @@ function fixture(extra={}) {
   const attachment={endpoint:'ws://127.0.0.1:33333/',token:'a'.repeat(64),state:{id,hostId:'durable',latestThreadSettings:{cwd:'/cloud/not-a-local-directory'}},manifest:{readonly:true,hostId:'durable',send:false,steer:false,queue:false,interrupt:false},close:async()=>calls.push('attachment.close')};
   const reader={listConversations:async()=>({threads:[{id,kind:'codex',hostId:'durable',title:'Online'}]}),readConversation:async(target,args)=>{calls.push({read:target,args});return {thread:{id:target,kind:'codex',hostId:'durable'},turns:[]};},close:async()=>calls.push('reader.close')};
   const dependencies={lease:()=>true,createHome:async()=>home,createReader:async()=>reader,writeDiagnostics:async()=>{},loadIdentityLinks:async()=>[],
+    writeConnectionDiagnostics:async()=>{},
     createRecentStore:()=>({get:async()=>null,put:async()=>{},delete:async()=>{}}),
     chooseThread:async rows=>{calls.push({candidates:rows});return rows.find(row=>row.hostId==='durable').id;},
     createAttachment:async args=>{calls.push({attachment:args});return attachment;},
@@ -34,6 +35,56 @@ test('missing cloud owner explains the Work/native connection boundary without e
   assert.match(cloudTerminalError({code:'NO_OWNER',message:secret},'zh-CN'), /当前 Work 页面未建立原生 Codex 连接.*Codex 视图.*NO_OWNER/);
   assert.match(cloudTerminalError({code:'NO_OWNER',message:secret},'en-SG'), /Work page has no native Codex connection.*Codex view.*NO_OWNER/);
   for(const code of ['NO_OWNER','REMOTE_ERROR',secret])assert.equal(cloudTerminalError({code,message:secret},'en-US').includes(secret),false);
+});
+
+test('slow discovery and a loading execution view have distinct localized errors without upstream text',()=>{
+  for(const code of ['CLOUD_DISCOVERY_TIMEOUT','CLOUD_OWNER_NOT_READY'])for(const locale of ['en-US','zh-CN']){
+    const text=cloudTerminalError({code,message:'private response'},locale);
+    assert.ok(text.includes(code));assert.equal(text.includes('private response'),false);
+  }
+});
+
+test('a timed-out discovery stops without a misleading picker and saves its reason',async()=>{
+  const f=linkedFixture();f.dependencies.loadIdentityLinks=async()=>[];
+  f.dependencies.discoverCandidate=async(_list,_frontend,_read,{onDiagnostic})=>{
+    onDiagnostic({version:1,outcome:'timeout',candidates:15,scanned:12,elapsedMs:45000});
+    throw Object.assign(new Error('private response'),{code:'CLOUD_DISCOVERY_TIMEOUT'});
+  };
+  const reports=[];f.dependencies.writeConnectionDiagnostics=async(_home,stage,value)=>reports.push({stage,value});
+  await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),{code:'CLOUD_DISCOVERY_TIMEOUT'});
+  assert.equal(reports.length,1);assert.equal(reports[0].stage,'discovery');assert.equal(reports[0].value.outcome,'timeout');
+  assert.equal(f.calls.some(x=>x.attachment||x.launch),false);
+});
+
+test('selection after a long picker wait renews the source by a live page check before recovery',async()=>{
+  for(const samePage of [true,false]){
+    const f=linkedFixture();let time=100010,discoveries=0;
+    f.dependencies.now=()=>time;f.dependencies.loadIdentityLinks=async()=>[];
+    f.dependencies.discoverCandidate=async()=>++discoveries===1?null:{native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId},title:'Online'};
+    f.dependencies.chooseThread=async()=>{time+=60000;return frontendId;};
+    f.dependencies.recheckTitleContext=async(context,{refreshAge})=>{
+      assert.equal(refreshAge,true);assert.equal(context.capturedAt,100000);return samePage;
+    };
+    f.dependencies.attachWithRecovery=async args=>{assert.equal(args.plan.context.capturedAt,160010);return args.connect();};
+    if(samePage)assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
+    else await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),{code:'CLOUD_PAGE_CHANGED'});
+  }
+});
+
+test('recovery diagnostics are saved before viewing or reporting a connection failure',async()=>{
+  for(const fails of [false,true]){
+    const f=fixture(),events=[];
+    f.dependencies.attachWithRecovery=async args=>{
+      args.onDiagnostic({version:1,navigated:true,attempts:[{elapsedMs:20000,result:'no-owner'}],outcome:fails?'owner-not-ready':'connected'});
+      if(fails)throw Object.assign(new Error('private upstream response'),{code:'CLOUD_OWNER_NOT_READY'});
+      return args.connect();
+    };
+    f.dependencies.writeConnectionDiagnostics=async(_home,stage,value)=>{events.push(stage);assert.equal(JSON.stringify(value).includes('private'),false);};
+    f.dependencies.runView=async()=>{assert.deepEqual(events,['recovery']);return 0;};
+    if(fails)await assert.rejects(runCloudTerminal(options,f.dependencies),{code:'CLOUD_OWNER_NOT_READY'});
+    else assert.equal(await runCloudTerminal(options,f.dependencies),0);
+    assert.deepEqual(events,['recovery']);
+  }
 });
 test('catalog retains exact durable identities, deduplicates, and strips terminal controls',()=>{
   const rows=cloudCandidates({pinnedThreads:[{id,kind:'codex',hostId:'durable',title:'\x1b[31mCloud\x1b[0m\r\n'}],threads:[{id,kind:'codex',hostId:'durable',title:'duplicate'}, {id:'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',kind:'chatgpt',hostId:'durable'}, {id:'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee',kind:'codex',hostId:'local'}]});

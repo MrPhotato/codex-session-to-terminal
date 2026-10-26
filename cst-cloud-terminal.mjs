@@ -126,6 +126,7 @@ async function cloudTerminalAttempt(options, dependencies) {
     environment = process.env,
     now = Date.now,
     writeDiagnostics = (home, value) => writeFile(join(home, 'diagnostics.json'), JSON.stringify(value, null, 2) + '\n', { flag: 'w' }),
+    writeConnectionDiagnostics = (home, stage, value) => writeFile(join(home, `${stage}-diagnostics.json`), JSON.stringify(value, null, 2) + '\n', { flag: 'w' }),
   } = dependencies;
   if (!lease()) throw fail('TRAY_STOPPED');
   if (signal?.aborted) throw fail('ABORTED');
@@ -190,9 +191,9 @@ async function cloudTerminalAttempt(options, dependencies) {
           ]));
           const evidence = frontendMessageEvidence(frontend, link.frontendId, titleContext.title);
           if (evidence && native.thread?.id === link.nativeId && native.thread.kind === 'codex' && native.thread.hostId === 'durable' &&
-              await recheckTitleContext(titleContext, { signal: lifetime.signal })) {
+              await recheckTitleContext(titleContext, { signal: lifetime.signal, refreshAge: true })) {
             original = native; messageEvidence = evidence; frontendTitle = titleContext.title;
-            recoveryPlan = { threadId: link.nativeId, context: titleContext, linkedEvidence: evidence, nativeTitle: native.thread.title ?? null };
+            recoveryPlan = { threadId: link.nativeId, context: { ...titleContext, capturedAt: now() }, linkedEvidence: evidence, nativeTitle: native.thread.title ?? null };
             diagnostics.candidateFound = true;
             await publishDiagnostics('linked-candidate');
             output.write((chinese() ? '正在核对已关联的云端会话：' : 'Verifying linked online session: ') + presenceTitle(titleContext.title) + '\n');
@@ -212,6 +213,7 @@ async function cloudTerminalAttempt(options, dependencies) {
             diagnostics.contextAgeAtRecheckMs = now() - titleContext.capturedAt;
             diagnostics.recheckPassed = Boolean(await measure('titleRecheck', () => recheckTitleContext(titleContext, {
               signal: lifetime.signal,
+              refreshAge: true,
               onDiagnostic: detail => {
                 if (['expired', 'aborted', 'helper-failed', 'unavailable', 'identity-changed', 'title-changed', 'document-changed', 'matched'].includes(detail?.reason) &&
                     Number.isFinite(detail.elapsedMs) && detail.elapsedMs >= 0) {
@@ -222,7 +224,7 @@ async function cloudTerminalAttempt(options, dependencies) {
           }
           if (diagnostics.readMatches && diagnostics.recheckPassed) {
             original = read;
-            recoveryPlan = { threadId: candidate, context: titleContext };
+            recoveryPlan = { threadId: candidate, context: { ...titleContext, capturedAt: now() } };
             await publishDiagnostics('matched');
             output.write((chinese() ? '按当前页面标题匹配：' : 'Matched current page title: ') + presenceTitle(titleContext.title) + '\n');
             return candidate;
@@ -256,15 +258,22 @@ async function cloudTerminalAttempt(options, dependencies) {
           } catch { /* A cache or probe failure uses normal discovery. */ }
         }
         usedRecent=Boolean(result);
-        if(!result) result = await measure('discoverIdentity', () => discoverCandidate(list, frontend,
-          read, { signal: lifetime.signal }));
+        if(!result) {
+          let discoveryDiagnostics;
+          try {
+            result = await measure('discoverIdentity', () => discoverCandidate(list, frontend,
+              read, { signal: lifetime.signal, onDiagnostic: value => { discoveryDiagnostics = value; } }));
+          } finally {
+            if (discoveryDiagnostics) { try { await writeConnectionDiagnostics(home, 'discovery', discoveryDiagnostics); } catch {} }
+          }
+        }
         if (lifetime.signal.aborted) throw fail('ABORTED');
         if (!result) return null;
         pendingRecent = usedRecent ? null : recentCloudCandidate(list,frontend.id,result.native.thread.id,result.evidence,now());
         original = result.native; messageEvidence = result.evidence; frontendTitle = result.title;
         if (titleContext && frontend.title === titleContext.title) {
-          if (!await recheckTitleContext(titleContext, { signal: lifetime.signal })) throw fail('CLOUD_PAGE_CHANGED');
-          recoveryPlan = { threadId: original.thread.id, context: titleContext,
+          if (!await recheckTitleContext(titleContext, { signal: lifetime.signal, refreshAge: true })) throw fail('CLOUD_PAGE_CHANGED');
+          recoveryPlan = { threadId: original.thread.id, context: { ...titleContext, capturedAt: now() },
             linkedEvidence: messageEvidence, nativeTitle: original.thread.title ?? null };
         }
         diagnostics.candidateFound = true;
@@ -316,7 +325,9 @@ async function cloudTerminalAttempt(options, dependencies) {
         ready = true; return value;
       } catch (error) { throw setupError ?? error; }
     };
-    await wait(adopt(attachWithRecovery({ connect, plan: recoveryPlan, signal: lifetime.signal,
+    let recoveryDiagnostics;
+    try { await wait(adopt(attachWithRecovery({ connect, plan: recoveryPlan, signal: lifetime.signal,
+      onDiagnostic: value => { recoveryDiagnostics = value; },
       createNavigator: async navigateTargets => {
         // Release the initial read-only helper before starting a narrowly bound
         // one-page navigator. No extra executor is kept after the excursion.
@@ -327,12 +338,16 @@ async function cloudTerminalAttempt(options, dependencies) {
       onPhase: phase => {
         const lines = {
           opening: ['正在临时打开会话以建立连接，随后返回原页面…', 'Temporarily opening the session to connect, then returning to your page…'],
+          'waiting-owner': ['执行视图尚未就绪，正在等待连接…', 'The execution view is not ready yet. Waiting for its connection…'],
           'return-skipped': ['保留当前页面，未自动返回。', 'Keeping the current page without automatic return.'],
           'return-unconfirmed': ['未能确认自动返回，请在桌面端查看；终端连接保持。', 'Automatic return was not confirmed. Check Desktop; the terminal connection is retained.'],
         };
         if (lines[phase]) output.write(lines[phase][chinese() ? 0 : 1] + '\n');
       },
     }), value => { attachment = value; }));
+    } finally {
+      if (recoveryDiagnostics) { try { await writeConnectionDiagnostics(home, 'recovery', recoveryDiagnostics); } catch {} }
+    }
     check(); if (stopError) throw stopError;
     if(pendingRecent) { try { await recentStore.put(pendingRecent); } catch {} }
     const launch = cloudCliLaunch({ ...options, threadId }, attachment, home, environment);
@@ -360,6 +375,8 @@ export function cloudTerminalError(error, locale = Intl.DateTimeFormat().resolve
     READ_ONLY_REQUIRED: ['云端终端只允许只读连接。', 'Online terminal sessions require a read-only connection.'],
     CLOUD_PAGE_CHANGED: ['无法确认原来的聊天页面，未自动跳转。请在目标聊天重新按快捷键。', 'The original chat page could not be confirmed; no automatic navigation was performed. Use the shortcut again in the intended chat.'],
     CLOUD_IDENTITY_UNCONFIRMED: ['无法核对这条云端会话的最新消息，未显示候选会话。请在桌面端打开目标聊天后重试。', 'The latest online message could not be verified. The candidate session was not displayed. Open the intended chat in Desktop and retry.'],
+    CLOUD_DISCOVERY_TIMEOUT: ['云端执行记录查询超时，尚未完成会话核对。请稍后重新按快捷键。 (CLOUD_DISCOVERY_TIMEOUT)', 'Cloud execution lookup timed out before session verification finished. Retry the shortcut shortly. (CLOUD_DISCOVERY_TIMEOUT)'],
+    CLOUD_OWNER_NOT_READY: ['已打开对应执行视图，但等待 25 秒后仍未建立连接。桌面端可能仍在加载，请稍后重试。 (CLOUD_OWNER_NOT_READY)', 'The execution view opened, but its connection was still unavailable after waiting 25 seconds. Desktop may still be loading; retry shortly. (CLOUD_OWNER_NOT_READY)'],
     UNSUPPORTED_CLOUD_PROJECTION: ['这条云会话的内容格式尚不支持终端显示，请继续在桌面端查看。', 'This online session has content not yet supported by the terminal. View it in Desktop.'],
     NO_OWNER: ['已识别这条云端会话，但当前 Work 页面未建立原生 Codex 连接。请先在桌面端的 Codex 视图打开这条会话，再连接只读终端。 (NO_OWNER)', 'The online session was identified, but its Work page has no native Codex connection. Open this session in Desktop\'s Codex view, then reconnect the read-only terminal. (NO_OWNER)'],
   };

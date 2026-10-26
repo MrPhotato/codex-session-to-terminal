@@ -79,17 +79,21 @@ export function decodeDesktopTitleContext(encoded, now = Date.now()) {
   } catch { return null; }
 }
 
-export async function recheckDesktopTitleContext(context, { signal, executeFn = execute, now = Date.now, onDiagnostic = () => {} } = {}) {
+export async function recheckDesktopTitleContext(context, { signal, executeFn = execute, now = Date.now,
+  refreshAge = false, onDiagnostic = () => {} } = {}) {
+  // A slow lookup/manual picker may outlive the shortcut snapshot. Renewal
+  // still requires a new live read of the same process/window/title/document;
+  // it never extends the lifetime of a cached observation by itself.
   const started = now();
   const finish = reason => {
     try { onDiagnostic({ reason, elapsedMs: Math.max(0, now() - started) }); } catch {}
     return reason === 'matched';
   };
   if (!validDesktopTitleContext(context) || !Number.isSafeInteger(context.capturedAt) ||
-      now() < context.capturedAt || now() - context.capturedAt > 30000) return finish('expired');
+      now() < context.capturedAt || !refreshAge && now() - context.capturedAt > 30000) return finish('expired');
   if (signal?.aborted) return finish('aborted');
   const { actual, reason } = await readSnapshot(context, { signal, executeFn, now });
-  if (now() < context.capturedAt || now() - context.capturedAt > 30000) return finish('expired');
+  if (now() < context.capturedAt || !refreshAge && now() - context.capturedAt > 30000) return finish('expired');
   if (!actual) return finish(reason);
   if (actual.title !== context.title) return finish('title-changed');
   if (actual.documentRuntimeId !== context.documentRuntimeId) return finish('document-changed');

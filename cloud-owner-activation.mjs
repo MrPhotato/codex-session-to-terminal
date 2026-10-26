@@ -36,9 +36,10 @@ function loadedUntitledPageTitle(attachment, threadId) {
 // creation request. No messages/settings/ownership claims are sent. The caller
 // checks either a title-directory candidate or an inspected message-linked pair.
 export async function attachCloudWithPageRecovery({ connect, plan, createNavigator,
-  signal, onPhase = () => {} }, { readContext = readDesktopTitleContext, restorePage = restoreDesktopPage, now = Date.now,
+  signal, onPhase = () => {}, onDiagnostic = () => {} }, { readContext = readDesktopTitleContext, restorePage = restoreDesktopPage, now = Date.now,
   pause = milliseconds => delay(milliseconds, undefined, { signal }) } = {}) {
-  const phase = value => { try { onPhase(value); } catch {} };
+  let diagnostics;
+  const phase = value => { if (diagnostics) diagnostics.phase = value; try { onPhase(value); } catch {} };
   const check = () => { if (signal?.aborted) throw fail('ABORTED'); };
   const wait = async milliseconds => {
     try { await pause(milliseconds); } catch (error) { check(); throw error; }
@@ -60,6 +61,8 @@ export async function attachCloudWithPageRecovery({ connect, plan, createNavigat
   const before = await refresh();
   if (!sameWindowTitle(context, before) || before.documentRuntimeId !== context.documentRuntimeId) throw fail('CLOUD_PAGE_CHANGED');
   let navigator, navigated = false, opened, openedAt, connected;
+  const startedAt = now();
+  diagnostics = { version: 1, navigated: false, attempts: [], outcome: 'pending' };
   try {
     navigator = await createNavigator([threadId]);
     check();
@@ -82,20 +85,41 @@ export async function attachCloudWithPageRecovery({ connect, plan, createNavigat
     check(); phase('opening');
     const result = await navigator.navigateConversation(threadId);
     if (result?.navigated !== true) throw fail('NAVIGATION_OUTCOME_UNKNOWN');
-    navigated = true; openedAt = now();
+    navigated = true; diagnostics.navigated = true; openedAt = now();
     await wait(250);
     opened = await refresh();
     phase('connecting');
     // Only discovery is retried. Each attempt is a separate read-only follower
     // and cleans itself up on failure. No navigation or user input is replayed.
-    for (let attempt = 0; attempt < 4; attempt++) {
+    const deadline = openedAt + 25000;
+    let retryDelay = 350, waiting = false;
+    while (now() < deadline) {
       check();
-      try { return connected = await connect(); }
+      const began = now();
+      try {
+        connected = await connect();
+        diagnostics.attempts.push({ elapsedMs: now() - openedAt, durationMs: now() - began, result: 'connected' });
+        diagnostics.outcome = 'connected';
+        return connected;
+      }
       catch (error) {
-        if (error.code !== 'NO_OWNER' || attempt === 3 || now() - openedAt >= 15000) throw error;
-        await wait(350);
+        diagnostics.attempts.push({ elapsedMs: now() - openedAt, durationMs: now() - began,
+          result: error.code === 'NO_OWNER' ? 'no-owner' : 'failed' });
+        if (error.code !== 'NO_OWNER') throw error;
+        check();
+        if (!waiting) { phase('waiting-owner'); waiting = true; }
+        const remaining = deadline - now();
+        if (remaining <= 0) break;
+        await wait(Math.min(retryDelay, remaining));
+        retryDelay = Math.min(1500, retryDelay * 2);
       }
     }
+    check();
+    throw fail('CLOUD_OWNER_NOT_READY');
+  } catch (error) {
+    diagnostics.outcome = error.code === 'CLOUD_OWNER_NOT_READY' ? 'owner-not-ready' :
+      signal?.aborted ? 'aborted' : 'failed';
+    throw error;
   } finally {
     if (navigated && !signal?.aborted) {
       try {
@@ -129,6 +153,9 @@ export async function attachCloudWithPageRecovery({ connect, plan, createNavigat
       } catch { phase('return-unconfirmed'); }
     }
     try { await navigator?.close(); } catch {}
+    diagnostics.elapsedMs = Math.max(0, now() - startedAt);
+    // Only timing/count/state data; no page titles, identifiers or upstream text.
+    try { onDiagnostic(diagnostics); } catch {}
     if (signal?.aborted && connected) { try { await connected.close(); } catch {} check(); }
   }
 }

@@ -65,6 +65,20 @@ test('input epoch is optional for old readers but must be an exact uint when pre
   }
 });
 
+test('slow lookup can refresh age only after re-reading the same window generation and page', async () => {
+  for (const change of [{}, { title: 'Other page' }, { documentRuntimeId: '42,99' }, { pid: 999 },
+    { window: 999 }, { started: '639000000000000002' }]) {
+    let reads = 0;
+    const dependencies = { now: () => 180000, executeFn: async () => {
+      reads++; return { stdout: JSON.stringify({ ...context, ...change }) };
+    } };
+    assert.equal(await recheckDesktopTitleContext(context, dependencies), false);
+    assert.equal(reads, 0);
+    assert.equal(await recheckDesktopTitleContext(context, { ...dependencies, refreshAge: true }), Object.keys(change).length === 0);
+    assert.equal(reads, 1);
+  }
+});
+
 test('fresh reads refresh the exact window generation without treating a title or input change as identity', async () => {
   const actual = { ...context, title: 'Changed page', documentRuntimeId: '42,-8,11', lastInputTick: 3123 };
   const refreshed = await readDesktopTitleContext(context, { now: () => 140001,
