@@ -78,7 +78,7 @@ export async function createCloudWindowsAttachment(options = {}, factories = {})
     if (bridge.state?.id !== threadId || bridge.state?.hostId !== 'durable' || bridge.status?.ready !== true ||
         bridge.manifest?.readonly !== true) throw failure('INVALID_CLOUD_ATTACHMENT');
     await accept(await createProxy({
-      bridge, powershellPath, signal: lifetime.signal,
+      bridge, powershellPath, signal: lifetime.signal, onError: disconnected,
     }), resource => { proxy = resource; });
     requireOpen();
     return {

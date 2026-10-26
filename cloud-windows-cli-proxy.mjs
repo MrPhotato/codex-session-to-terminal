@@ -96,6 +96,17 @@ function checkItem(item, turnId) {
     }
     delete item.receiverThreads;
   }
+  if (item.type === 'userMessage' && Array.isArray(item.content)) {
+    item.content = item.content.map(value => {
+      if (value?.type !== 'image') return value;
+      if (!onlyFields(value, ['type', 'url', 'detail']) || typeof value.url !== 'string' || !value.url ||
+          value.detail != null && !['auto', 'low', 'high', 'original'].includes(value.detail)) fail('The cloud image input is malformed.');
+      // The Windows CLI cannot open a cloud attachment. Show an explicit text
+      // placeholder; never pass its URL/data to the CLI or fetch it locally.
+      return { type: 'text', text: /^zh\b/i.test(Intl.DateTimeFormat().resolvedOptions().locale)
+        ? '[图片：请在 ChatGPT 中查看]' : '[Image: view in ChatGPT]' };
+    });
+  }
   if (item.type === 'userMessage' && (!Array.isArray(item.content) || item.content.some(value =>
     !object(value) || value.type !== 'text' || typeof value.text !== 'string' ||
     Object.keys(value).some(key => !['type', 'text', 'text_elements'].includes(key))))) {
@@ -246,7 +257,7 @@ export async function createCloudWindowsCliProxy(options = {}, factories = {}) {
   if (options.allowInterrupt !== undefined && options.allowInterrupt !== false || Object.hasOwn(options, 'interruptControl')) {
     fail('Cloud terminal attachments are strictly read-only.', 'READ_ONLY_REQUIRED');
   }
-  const { bridge, powershellPath, signal } = options;
+  const { bridge, powershellPath, signal, onError } = options;
   if ((factories.platform ?? process.platform) !== 'win32' || bridge?.manifest?.readonly !== true || bridge?.state?.hostId !== 'durable') {
     fail('A read-only durable bridge on Windows is required.');
   }
@@ -339,7 +350,13 @@ export async function createCloudWindowsCliProxy(options = {}, factories = {}) {
       count(records.rejected, methodParams.has(method) || method === 'turn/interrupt' ? method : 'unsupported');
       send({ id, error: { code, message } });
     };
-    const stop = () => { records.projectionFailed = true; socket.close(1011, 'This cloud attachment cannot safely represent the upstream state.'); upstream.terminate(); };
+    const stop = () => {
+      records.projectionFailed = true;
+      socket.close(1011, 'This cloud attachment cannot safely represent the upstream state.'); upstream.terminate();
+      // The CLI may exit before showing a WebSocket close reason. Notify the
+      // owning wrapper so it can retain a localized, content-free explanation.
+      try { onError?.(Object.assign(new Error('Unsupported cloud display format.'), { code: 'UNSUPPORTED_CLOUD_PROJECTION' })); } catch {}
+    };
     upstream.on('open', () => {
       const buffered = queued.splice(0); queuedBytes = 0;
       for (const { value, bytes } of buffered) forward(value, bytes);

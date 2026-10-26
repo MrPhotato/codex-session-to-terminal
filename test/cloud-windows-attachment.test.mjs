@@ -80,6 +80,15 @@ test('connection loss closes only owned resources and reports an unavailable own
   assert.deepEqual(f.calls.slice(-2), ['proxy-close', 'bridge-close']);
 });
 
+test('unsupported display formats reach the wrapper and close owned resources once', async () => {
+  const f = fixture(), errors = [];
+  const attachment = await createCloudWindowsAttachment({ threadId, onError: error => errors.push(error.code) }, f.factories);
+  f.proxyOptions.onError(Object.assign(new Error('Unsupported display'), { code: 'UNSUPPORTED_CLOUD_PROJECTION' }));
+  await attachment.close();
+  assert.deepEqual(errors, ['UNSUPPORTED_CLOUD_PROJECTION']);
+  assert.deepEqual(f.calls.slice(-2), ['proxy-close', 'bridge-close']);
+});
+
 test('specific disconnected reasons survive the status-before-error callback order', async () => {
   for (const code of ['CONNECT_TIMEOUT', 'REQUEST_TIMEOUT', 'REMOTE_ERROR', 'PROTOCOL_ERROR']) {
     const f = fixture(), errors = [];
