@@ -975,3 +975,91 @@ added; the earlier cache idea remains unimplemented.
 All 533 JavaScript tests passed, including sparse/exhausted summaries, a
 different or truncated latest input, and overlapping linked reads that cannot
 open a viewer before both complete.
+
+## Recent successful candidate fast path (25 October 2026)
+
+Repeated opens can reuse a successful candidate for up to five minutes within
+the same tray run. Enrollment happens only after full discovery and canonical
+native receipt validation, not when text comparison merely suggests a match.
+The bounded, atomically replaced store holds at most 64 entries in 32 KiB:
+frontend/native/client-message IDs, a directory digest and the original time.
+It contains no titles, message text or credentials. Hits do not renew expiry.
+
+Every attempt still obtains a fresh directory. The competing cloud candidates
+must be idle with unchanged update stamps; added/removed/renamed candidates,
+conflicting directory rows, missing metadata or another active cloud candidate
+disable reuse. The current frontend receipt must equal the enrolled receipt.
+Two parallel summary reads are followed by a short-lived, read-only native
+attachment that verifies the canonical latest message. Only then can normal
+display attachment proceed, which verifies the receipt again. A failed probe
+discards the hint and runs full discovery. A receipt changing between probe and
+display closes the attempt and retries full discovery once, with reuse disabled.
+An unavailable owner also falls back to the existing recovery path. No cache
+failure publishes candidate history or grants cloud control/navigation access.
+
+This is a bounded optimization of the existing recent/pinned directory scope,
+not proof of account-wide fork uniqueness. Cache lookup requires idle update
+metadata for competitors; it does not cache or relax the final message proof.
+The six-second fast-path deadline bounds added wait if it cannot verify a hint.
+There is no new resident process and no Desktop/global configuration change.
+
+All 541 JavaScript tests and the complete Windows/PowerShell suite passed.
+Tests cover repeated opens without a broad scan, enrollment after proof,
+non-renewing expiry, changed messages/directories, active competitors, timeout,
+late completion, malformed/unwritable storage and cleanup before retry.
+The first live benchmark attempt stopped at NO_OWNER before CLI display because
+the chosen cloud execution view was not attached in Desktop. No page was switched
+and no message was sent; an end-to-end performance claim remains pending a live
+owner and the user's installed shortcut acceptance.
+
+
+## 2026-10-26: cache-free startup and actual-terminal observations
+
+The five-minute recent-candidate optimization above is retired. Production no
+longer imports or distributes its module. Existing private files are untouched;
+they are not consumed or updated by the new launcher.
+
+Exact native-ID entry points now validate the authoritative durable read-only
+attachment directly, without creating an app-tools executor or reading a redundant
+summary. Frontend-title discovery retains its current title/content/message-ID
+checks. Bounded inspection of Desktop 26.1016.8622.0 did not establish a new usable
+external frontend-to-executor relation API. The `codexThreadId` occurrences
+examined belong to executor metadata and realtime voice handoff tracking, not a
+general external mapping API. No speculative probing was added to startup.
+
+The lookup-only executor closes asynchronously after the native CLI's first
+rendered composer; final cleanup joins the same promise. It is not needed for
+ongoing native streaming, paging or the independent return-to-Desktop button.
+A failed archival/cleanup result is diagnostic and cannot close a healthy viewer.
+
+`terminal-status.json` is one sanitized, coalesced snapshot per actual terminal,
+including local terminals. No server, control endpoint, transcript, title,
+conversation ID or connection credential is added. It is a last observation,
+not a process heartbeat or a claim that the window is foreground. First rendered
+composer and first verified content are deliberately separate measurements.
+
+The paired benchmark, limitations and resource checks are recorded in
+[CLOUD-FIRST-OPEN-ACCEPTANCE.md](CLOUD-FIRST-OPEN-ACCEPTANCE.md).
+
+## 2026-10-26: bounded concurrent cloud lookup
+
+Content discovery now overlaps at most eight reads in the same official query
+helper, up from three. Request count, recent/pinned directory scope, all-candidate
+uniqueness checks, fresh frontend re-read and final native receipt validation are
+unchanged. There is no cache, extra query process or speculative connection.
+
+Ten counterbalanced full CLI pairs all displayed the correct title, body and
+read-only banner. Median engine-to-content time was 17.804 s with three reads
+versus 15.767 s with eight. Helper startup also varied substantially; that entire
+difference must not be attributed to concurrency. Four additional pairs excluded
+startup and isolated the candidate reads: median candidate time was 11.599 s
+versus 10.457 s, with eight faster in all four pairs. This supports a modest
+lookup improvement, not a fixed two-second gain for every open.
+
+Expanded checks also reproduced existing limits in both versions: multimodal
+history with different frontend/native representations, extra native-only user
+messages, and an otherwise matching candidate without a Desktop owner. These
+were not converted into successes by weaker matching and remain separate work.
+No page was switched and no chat message was submitted during these tests.
+
+Details and scope are recorded in [CLOUD-LOOKUP-ACCEPTANCE.md](CLOUD-LOOKUP-ACCEPTANCE.md).

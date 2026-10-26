@@ -9,6 +9,7 @@ import { createDesktopButtonAction } from './desktop-button-action.mjs';
 import { matchCloudThreadByTitle, matchesCloudTitleRead } from './cloud-title-selection.mjs';
 import { decodeDesktopTitleContext, recheckDesktopTitleContext } from './desktop-title-context.mjs';
 import { attachCloudWithPageRecovery } from './cloud-owner-activation.mjs';
+import { createTerminalDiagnostics } from './terminal-diagnostics.mjs';
 import { parseCloudIdentityLinks, findLinkedCloudCandidate, frontendMessageEvidence, matchesCloudMessageEvidence, cloudFrontends, discoverCloudCandidate } from './cloud-identity-links.mjs';
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -100,6 +101,10 @@ export function cloudCliLaunch(options, attachment, home, environment = process.
 }
 
 export async function runCloudTerminal(options, dependencies = {}) {
+  return cloudTerminalAttempt(options,dependencies);
+}
+
+async function cloudTerminalAttempt(options, dependencies) {
   const { input = process.stdin, output = process.stdout, processEvents = process, signal,
     lease = createTrayLease(options.controlDirectory), createPresence = createSessionPresence,
     createHome = () => mkdtemp(join(options.controlDirectory, 'cloud-view-')),
@@ -112,35 +117,57 @@ export async function runCloudTerminal(options, dependencies = {}) {
     attachWithRecovery = attachCloudWithPageRecovery,
     loadIdentityLinks = loadCloudIdentityLinks,
     discoverCandidate = discoverCloudCandidate,
+    createDiagnostics = createTerminalDiagnostics,
     environment = process.env,
     now = Date.now,
+    clock = () => performance.now(),
     writeDiagnostics = (home, value) => writeFile(join(home, 'diagnostics.json'), JSON.stringify(value, null, 2) + '\n', { flag: 'w' }),
+    writeConnectionDiagnostics = (home, stage, value) => writeFile(join(home, `${stage}-diagnostics.json`), JSON.stringify(value, null, 2) + '\n', { flag: 'w' }),
   } = dependencies;
   if (!lease()) throw fail('TRAY_STOPPED');
   if (signal?.aborted) throw fail('ABORTED');
   const lifetime = new AbortController();
   const startedAt = now();
+  const startedClock = clock();
   const diagnostics = { version: 1, titleContextPresent: Boolean(options.titleContext), explicitThread: Boolean(options.threadId),
     contextAgeAtStartMs: Number.isSafeInteger(options.titleContext?.capturedAt) ? startedAt - options.titleContext.capturedAt : null,
     timingsMs: {}, candidateFound: null, readMatches: null, recheckPassed: null, recheckDetail: null, contextAgeAtRecheckMs: null,
     failedStage: null, outcome: 'pending' };
-  let diagnosticHome, diagnosticsWritten = false;
+  let diagnosticHome, diagnosticsWritten = false, observation, readerCleanup, firstScreen = false;
+  let queries = 0, queryErrors = 0, terminalError;
   const measure = async (stage, action) => {
-    const began = now();
+    const began = clock();
     try { return await action(); }
     catch (error) { diagnostics.failedStage = stage; throw error; }
-    finally { diagnostics.timingsMs[stage] = Math.max(0, now() - began); }
+    finally {
+      diagnostics.timingsMs[stage] = Math.max(0, Math.round(clock() - began));
+      observation?.update({timingsMs:{[stage]:Math.round(diagnostics.timingsMs[stage])}});
+    }
   };
   const publishDiagnostics = async outcome => {
     if (!diagnosticHome || diagnosticsWritten) return;
     diagnosticsWritten = true;
     diagnostics.outcome = outcome;
-    diagnostics.elapsedMs = Math.max(0, now() - startedAt);
+    diagnostics.elapsedMs = Math.max(0, Math.round(clock() - startedClock));
     // A bounded, content-free snapshot is written once before the picker/view.
     // Diagnostic I/O cannot turn a usable session into a connection failure.
     try { await writeDiagnostics(diagnosticHome, diagnostics); } catch {}
   };
   let reader, attachment, presence, viewer, buttonAction, closed = false, timer, stopError, rejectStopped;
+  const readConversation = async (...args) => {
+    queries++;observation?.update({queries});
+    try { return await reader.readConversation(...args); }
+    catch(error) { queryErrors++;observation?.update({queryErrors});throw error; }
+  };
+  const releaseReader = () => {
+    if(!reader)return readerCleanup;
+    const owned=reader;reader=undefined;
+    observation?.update({reader:'closing'});
+    readerCleanup=Promise.resolve().then(()=>owned.close()).then(
+      result=>observation?.update({reader:result?.helperMayExist?'cleanup-failed':'released'}),
+      ()=>observation?.update({reader:'cleanup-failed'}));
+    return readerCleanup;
+  };
   const stopped = new Promise((_, reject) => { rejectStopped = reject; });
   stopped.catch(() => {});
   const stop = error => { if (!stopError && !closed) { stopError = error; lifetime.abort(); rejectStopped(error); } };
@@ -162,8 +189,14 @@ export async function runCloudTerminal(options, dependencies = {}) {
       : (chinese() ? '正在读取云端会话列表…\n' : 'Loading online sessions…\n'));
     const home = await wait(measure('createHome', createHome));
     diagnosticHome = home;
-    await wait(adopt(measure('createReader', () => createReader({ backendPath: options.backendPath, nodePath: process.execPath,
-      powershellPath: options.powershellPath, cwd: home })), value => { reader = value; }));
+    observation = createDiagnostics(home,{mode:'readonly'});
+    // Exact native links are validated by the authoritative durable follower.
+    // They do not need a catalog executor or an extra summary round trip.
+    if(!options.threadId) {
+      await wait(adopt(measure('createReader', () => createReader({ backendPath: options.backendPath, nodePath: process.execPath,
+        powershellPath: options.powershellPath, cwd: home })), value => { reader = value; }));
+      observation.update({reader:'active',phase:'listing'});
+    }
     let original, recoveryPlan, messageEvidence, frontendTitle;
     const threadId = options.threadId ?? await wait((async () => {
       const list = await measure('listConversations', () => reader.listConversations({ limit: 50 }));
@@ -173,14 +206,14 @@ export async function runCloudTerminal(options, dependencies = {}) {
       if (link) {
         try {
           const [frontend, native] = await measure('linkedRead', () => Promise.all([
-            reader.readConversation(link.frontendId, { turnLimit: 1, maxOutputCharsPerItem: 1 }),
-            reader.readConversation(link.nativeId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }),
+            readConversation(link.frontendId, { turnLimit: 1, maxOutputCharsPerItem: 1 }),
+            readConversation(link.nativeId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }),
           ]));
           const evidence = frontendMessageEvidence(frontend, link.frontendId, titleContext.title);
           if (evidence && native.thread?.id === link.nativeId && native.thread.kind === 'codex' && native.thread.hostId === 'durable' &&
-              await recheckTitleContext(titleContext, { signal: lifetime.signal })) {
+              await recheckTitleContext(titleContext, { signal: lifetime.signal, refreshAge: true })) {
             original = native; messageEvidence = evidence; frontendTitle = titleContext.title;
-            recoveryPlan = { threadId: link.nativeId, context: titleContext, linkedEvidence: evidence, nativeTitle: native.thread.title ?? null };
+            recoveryPlan = { threadId: link.nativeId, context: { ...titleContext, capturedAt: now() }, linkedEvidence: evidence, nativeTitle: native.thread.title ?? null };
             diagnostics.candidateFound = true;
             await publishDiagnostics('linked-candidate');
             output.write((chinese() ? '正在核对已关联的云端会话：' : 'Verifying linked online session: ') + presenceTitle(titleContext.title) + '\n');
@@ -194,12 +227,13 @@ export async function runCloudTerminal(options, dependencies = {}) {
       diagnostics.candidateFound = Boolean(candidate);
       if (candidate) {
         try {
-          const read = await measure('candidateRead', () => reader.readConversation(candidate, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }));
+          const read = await measure('candidateRead', () => readConversation(candidate, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }));
           diagnostics.readMatches = matchesCloudTitleRead(read, candidate, titleContext.title);
           if (diagnostics.readMatches) {
             diagnostics.contextAgeAtRecheckMs = now() - titleContext.capturedAt;
             diagnostics.recheckPassed = Boolean(await measure('titleRecheck', () => recheckTitleContext(titleContext, {
               signal: lifetime.signal,
+              refreshAge: true,
               onDiagnostic: detail => {
                 if (['expired', 'aborted', 'helper-failed', 'unavailable', 'identity-changed', 'title-changed', 'document-changed', 'matched'].includes(detail?.reason) &&
                     Number.isFinite(detail.elapsedMs) && detail.elapsedMs >= 0) {
@@ -210,7 +244,7 @@ export async function runCloudTerminal(options, dependencies = {}) {
           }
           if (diagnostics.readMatches && diagnostics.recheckPassed) {
             original = read;
-            recoveryPlan = { threadId: candidate, context: titleContext };
+            recoveryPlan = { threadId: candidate, context: { ...titleContext, capturedAt: now() } };
             await publishDiagnostics('matched');
             output.write((chinese() ? '按当前页面标题匹配：' : 'Matched current page title: ') + presenceTitle(titleContext.title) + '\n');
             return candidate;
@@ -224,14 +258,24 @@ export async function runCloudTerminal(options, dependencies = {}) {
       const matching = titleContext && !localTitleConflict ? frontends.filter(row => row.title === titleContext.title) : [];
       const resolveFrontend = async frontend => {
         output.write(chinese() ? '正在核对聊天与云端执行记录…\n' : 'Checking the chat against cloud execution records…\n');
-        const result = await measure('discoverIdentity', () => discoverCandidate(list, frontend,
-          (target, args) => reader.readConversation(target, args), { signal: lifetime.signal }));
+        observation.update({phase:'matching'});
+        const read = (target,args)=>readConversation(target,args);
+        let result;
+        {
+          let discoveryDiagnostics;
+          try {
+            result = await measure('discoverIdentity', () => discoverCandidate(list, frontend,
+              read, { signal: lifetime.signal, onDiagnostic: value => { discoveryDiagnostics = value; } }));
+          } finally {
+            if (discoveryDiagnostics) { try { await writeConnectionDiagnostics(home, 'discovery', discoveryDiagnostics); } catch {} }
+          }
+        }
         if (lifetime.signal.aborted) throw fail('ABORTED');
         if (!result) return null;
         original = result.native; messageEvidence = result.evidence; frontendTitle = result.title;
         if (titleContext && frontend.title === titleContext.title) {
-          if (!await recheckTitleContext(titleContext, { signal: lifetime.signal })) throw fail('CLOUD_PAGE_CHANGED');
-          recoveryPlan = { threadId: original.thread.id, context: titleContext,
+          if (!await recheckTitleContext(titleContext, { signal: lifetime.signal, refreshAge: true })) throw fail('CLOUD_PAGE_CHANGED');
+          recoveryPlan = { threadId: original.thread.id, context: { ...titleContext, capturedAt: now() },
             linkedEvidence: messageEvidence, nativeTitle: original.thread.title ?? null };
         }
         diagnostics.candidateFound = true;
@@ -253,11 +297,11 @@ export async function runCloudTerminal(options, dependencies = {}) {
     })());
     await publishDiagnostics('explicit-thread');
     if (!UUID.test(threadId ?? '')) throw fail('INVALID_ARGUMENTS');
-    original ??= await wait(reader.readConversation(threadId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }));
-    if (original.thread?.id !== threadId || original.thread.kind !== 'codex' || original.thread.hostId !== 'durable') throw fail('NOT_CLOUD_SESSION');
+    if(reader) original ??= await wait(readConversation(threadId, { hostId: 'durable', turnLimit: 1, maxOutputCharsPerItem: 1 }));
+    if (original && (original.thread?.id !== threadId || original.thread.kind !== 'codex' || original.thread.hostId !== 'durable')) throw fail('NOT_CLOUD_SESSION');
     presence = createPresence({ controlDirectory: options.controlDirectory, threadId });
     output.write('Online Session Read Only for Terminal\n');
-    let identityVerified = !messageEvidence;
+    let identityVerified = false;
     const displayTitle = messageEvidence ? presenceTitle(frontendTitle) : undefined;
     const updatePresence = state => presence.updateState(displayTitle ? { ...state, title: displayTitle } : state);
     const connect = async () => {
@@ -270,37 +314,58 @@ export async function runCloudTerminal(options, dependencies = {}) {
           onError: error => { if (ready) stop(error); else setupError ??= error; },
         });
         if (setupError) { await value.close(); throw setupError; }
+        if(value.state?.id!==threadId||value.state?.hostId!=='durable') {
+          await value.close();throw fail('NOT_CLOUD_SESSION');
+        }
+        if(value.manifest?.readonly!==true||value.manifest?.hostId!=='durable'||
+            ['send','steer','queue','interrupt'].some(key=>value.manifest[key]!==false)) {
+          await value.close();throw fail('READ_ONLY_REQUIRED');
+        }
         if (messageEvidence && !matchesCloudMessageEvidence(value.state, threadId, messageEvidence)) {
-          await value.close(); throw fail('CLOUD_IDENTITY_UNCONFIRMED');
+          await value.close();
+          throw fail('CLOUD_IDENTITY_UNCONFIRMED');
         }
         identityVerified = true;
         updatePresence(value.state); presence.updateStatus(value.status);
         ready = true; return value;
       } catch (error) { throw setupError ?? error; }
     };
-    await wait(adopt(attachWithRecovery({ connect, plan: recoveryPlan, signal: lifetime.signal,
+    let recoveryDiagnostics;
+    observation.update({phase:'attaching'});
+    try { await wait(adopt(measure('attach', () => attachWithRecovery({ connect, plan: recoveryPlan, signal: lifetime.signal,
+      onDiagnostic: value => { recoveryDiagnostics = value; },
       createNavigator: async navigateTargets => {
         // Release the initial read-only helper before starting a narrowly bound
         // one-page navigator. No extra executor is kept after the excursion.
-        const oldReader = reader; reader = undefined; await oldReader.close();
+        await releaseReader();
         return createReader({ backendPath: options.backendPath, nodePath: process.execPath,
           powershellPath: options.powershellPath, cwd: home, navigateTargets });
       },
       onPhase: phase => {
         const lines = {
           opening: ['正在临时打开会话以建立连接，随后返回原页面…', 'Temporarily opening the session to connect, then returning to your page…'],
+          'waiting-owner': ['执行视图尚未就绪，正在等待连接…', 'The execution view is not ready yet. Waiting for its connection…'],
           'return-skipped': ['保留当前页面，未自动返回。', 'Keeping the current page without automatic return.'],
           'return-unconfirmed': ['未能确认自动返回，请在桌面端查看；终端连接保持。', 'Automatic return was not confirmed. Check Desktop; the terminal connection is retained.'],
         };
         if (lines[phase]) output.write(lines[phase][chinese() ? 0 : 1] + '\n');
       },
-    }), value => { attachment = value; }));
+    })), value => { attachment = value; }));
+    } finally {
+      if (recoveryDiagnostics) { try { await writeConnectionDiagnostics(home, 'recovery', recoveryDiagnostics); } catch {} }
+    }
     check(); if (stopError) throw stopError;
+    observation.update({phase:'connected',identityVerified:true});
     const launch = cloudCliLaunch({ ...options, threadId }, attachment, home, environment);
     buttonAction = createButtonAction({ ...options, threadId, hostId: 'durable' }, { signal: lifetime.signal });
     viewer = Promise.resolve(runView(launch, { input, output, signal: lifetime.signal, displayTitle,
+      onFrame: frame => observation.frame(frame),
+      onReady: () => { if(!firstScreen) { firstScreen=true;void releaseReader(); } },
       onOpenDesktop: () => buttonAction.open() }));
-    return await wait(viewer);
+    const exitCode = await wait(viewer);
+    observation.update({exitCode});return exitCode;
+  } catch(error) {
+    terminalError=error;observation?.update({phase:'failed',errorCode:error?.code});throw error;
   } finally {
     await publishDiagnostics('selection-failed');
     closed = true; clearInterval(timer); lifetime.abort();
@@ -310,7 +375,9 @@ export async function runCloudTerminal(options, dependencies = {}) {
     // and release its child before main is allowed to end this wrapper process.
     try { await viewer; } catch {}
     try { await attachment?.close(); }
-    finally { try { await reader?.close(); } finally { try { await buttonAction?.close(); } finally { await presence?.close(); } } }
+    finally { try { await releaseReader(); } finally { try { await buttonAction?.close(); } finally {
+      try { await presence?.close(); } finally { await observation?.close(terminalError?{phase:'failed',errorCode:terminalError.code}:undefined); }
+    } } }
   }
 }
 
@@ -321,6 +388,8 @@ export function cloudTerminalError(error, locale = Intl.DateTimeFormat().resolve
     READ_ONLY_REQUIRED: ['云端终端只允许只读连接。', 'Online terminal sessions require a read-only connection.'],
     CLOUD_PAGE_CHANGED: ['无法确认原来的聊天页面，未自动跳转。请在目标聊天重新按快捷键。', 'The original chat page could not be confirmed; no automatic navigation was performed. Use the shortcut again in the intended chat.'],
     CLOUD_IDENTITY_UNCONFIRMED: ['无法核对这条云端会话的最新消息，未显示候选会话。请在桌面端打开目标聊天后重试。', 'The latest online message could not be verified. The candidate session was not displayed. Open the intended chat in Desktop and retry.'],
+    CLOUD_DISCOVERY_TIMEOUT: ['云端执行记录查询超时，尚未完成会话核对。请稍后重新按快捷键。 (CLOUD_DISCOVERY_TIMEOUT)', 'Cloud execution lookup timed out before session verification finished. Retry the shortcut shortly. (CLOUD_DISCOVERY_TIMEOUT)'],
+    CLOUD_OWNER_NOT_READY: ['已打开对应执行视图，但等待 25 秒后仍未建立连接。桌面端可能仍在加载，请稍后重试。 (CLOUD_OWNER_NOT_READY)', 'The execution view opened, but its connection was still unavailable after waiting 25 seconds. Desktop may still be loading; retry shortly. (CLOUD_OWNER_NOT_READY)'],
     UNSUPPORTED_CLOUD_PROJECTION: ['这条云会话的内容格式尚不支持终端显示，请继续在桌面端查看。', 'This online session has content not yet supported by the terminal. View it in Desktop.'],
     NO_OWNER: ['已识别这条云端会话，但当前 Work 页面未建立原生 Codex 连接。请先在桌面端的 Codex 视图打开这条会话，再连接只读终端。 (NO_OWNER)', 'The online session was identified, but its Work page has no native Codex connection. Open this session in Desktop\'s Codex view, then reconnect the read-only terminal. (NO_OWNER)'],
   };

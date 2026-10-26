@@ -56,6 +56,7 @@ async function fixture(t) {
   await plugin(home, '0.1.5'); const pluginPath = await plugin(home, '0.1.10');
   const calls = { execute: [], verify: [], destroyed: 0, client: [], list: [], read: [], navigate: [], close: 0 };
   const factories = {
+    findPipeHelper: () => null,
     fileSystem: { ...fs, async stat(path) {
       // Ancestor discovery must not read the developer's real config in a test.
       if (!resolve(path).startsWith(resolve(directory))) throw Object.assign(new Error('fixture absent'), { code: 'ENOENT' });
@@ -108,6 +109,35 @@ test('finds newest installed official plugin, isolates config, and verifies uniq
   await reader.readConversation('native-id', { hostId: 'durable' });
   assert.deepEqual(f.calls.read, [{ id: 'native-id', options: { hostId: 'durable' } }]);
   await reader.close(); assert.equal(f.calls.close, 1);
+});
+
+test('compiled endpoint discovery verifies once and does not launch a second transport helper', async t => {
+  const f = await fixture(t), executable = join(f.directory, 'Desktop-Pipe.exe');
+  const calls = [];
+  const reader = await createCloudDesktopReader(f.options, { ...f.factories, findPipeHelper: () => executable,
+    execute: async (...args) => { calls.push(args); return {stdout: JSON.stringify({pipeName:pipe})}; } });
+  assert.equal(await f.calls.client[0].resolvePipeEndpoint(), `\\\\.\\pipe\\${pipe}`);
+  assert.equal(calls.length, 1); assert.equal(calls[0][0], executable);
+  assert.deepEqual(calls[0][1], ['--discover-app-tools']); assert.equal(calls[0][2].windowsHide, true);
+  assert.equal(f.calls.verify.length, 0);
+  await reader.close();
+});
+
+test('compiled discovery rejects invalid results, failures and cancellation without using the fallback', async t => {
+  const f = await fixture(t), executable = join(f.directory, 'Desktop-Pipe.exe');
+  for (const value of [null, [], {pipeName:'codex-ipc'}, {pipeName:pipe,extra:true}, 'invalid', new Error('SECRET')]) {
+    let calls = 0;
+    const reader = await createCloudDesktopReader(f.options, { ...f.factories, findPipeHelper: () => executable,
+      execute: async () => { calls++; if(value instanceof Error)throw value; return {stdout:JSON.stringify(value)}; } });
+    await assert.rejects(reader.listConversations(), error => error.code === 'CLOUD_PIPE_UNAVAILABLE' && !error.message.includes('SECRET'));
+    assert.equal(calls, 1); await reader.close();
+  }
+  let started, signal; const ready = new Promise(resolve => { started = resolve; });
+  const reader = await createCloudDesktopReader(f.options, { ...f.factories, findPipeHelper: () => executable,
+    execute: (_exe,_args,options) => new Promise((resolve,reject) => { signal = options.signal; started(); signal.addEventListener('abort',()=>reject(Error('cancelled')),{once:true}); }) });
+  const pending = reader.listConversations(), rejected = assert.rejects(pending, code('CLOUD_PIPE_UNAVAILABLE'));
+  await ready; await reader.close(); await rejected;
+  assert.equal(signal.aborted, true); assert.equal(f.calls.verify.length, 0);
 });
 
 test('falls back to the current user plugin root without changing the executor config home', async t => {

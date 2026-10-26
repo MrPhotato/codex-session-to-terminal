@@ -186,7 +186,7 @@ function viewArguments(args, local) {
  */
 export async function runTerminalSessionView(launch, {
   mode = 'local', toolbar = true, onOpenDesktop, locale = Intl.DateTimeFormat().resolvedOptions().locale,
-  input = process.stdin, output = process.stdout, signal, onFrame, displayTitle,
+  input = process.stdin, output = process.stdout, signal, onFrame, onReady, displayTitle,
   spawnPty = (...args) => require('node-pty').spawn(...args),
   createTerminal = options => new (require('@xterm/headless').Terminal)(options),
   copySelection = copyTerminalText,
@@ -210,7 +210,7 @@ export async function runTerminalSessionView(launch, {
   let stopping = false, exited = false, completed = false, outputClosed = false;
   let dirty = false, blocked = false, timer, lastRows = [], lastFrameAt = 0;
   let pendingParseBytes = 0, parsePaused = false, hideBody = false, resizeGeneration = 0;
-  let lastBodyFrame, selection, copying = false, copyNotice = '', copyTimer;
+  let lastBodyFrame, selection, copying = false, copyNotice = '', copyTimer, readyReported = false;
   let resolveCompletion, resolveExit, resolveParsed;
   const completion = new Promise(resolve => { resolveCompletion = resolve; });
   const childExit = new Promise(resolve => { resolveExit = resolve; });
@@ -333,8 +333,16 @@ export async function runTerminalSessionView(launch, {
           `${modeOutput !== lastModes ? modeOutput : ''}${cursorOutput}${ESC}[?2026l`);
         lastModes = modeOutput; lastCursor = cursorOutput;
       }
+      const composerReady = !hideBody && hasCurrentComposer(terminal, size.rows);
       onFrame?.({ cols: outerSize.cols, rows: outerSize.rows, bodyRows: frame.bodyRows, compact: frame.compact, toolbarRows,
+        cliPid: child?.pid, composerReady, titleApplied: Boolean(lastTitle), outputBackpressured: blocked,
+        bodyVisible: frame.rendered.slice(0, frame.bodyRows).some(line => line.text.trim()),
         buttonRect: toolbar ? top.button : null, navigation, selectionActive: Boolean(selection?.dragged), lines: rendered.map(line => line.text) });
+      if (!readyReported && composerReady && !frame.compact && !blocked) {
+        readyReported = true;
+        // An observation/cleanup hook must never inject input or fail the view.
+        try { onReady?.(); } catch {}
+      }
     } catch (error) { finish(1, error); }
   };
   const schedule = () => {

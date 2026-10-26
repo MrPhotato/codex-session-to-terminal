@@ -56,7 +56,7 @@ const powershellPath = resolve('fixture-pwsh.exe');
 test('transport keeps default local arguments and admits only an exact app-tools pipe name', async () => {
   for (const pipeName of [undefined, 'codex-app-tools-11111111-2222-4333-8444-555555555555']) {
     const child = childFixture(); let args;
-    const pending = verifiedDesktopTransport(powershellPath, { pipeName, spawnHelper: (_exe, value) => { args = value; return child; } })();
+    const pending = verifiedDesktopTransport(powershellPath, { pipeName, nativeHelperPath: null, spawnHelper: (_exe, value) => { args = value; return child; } })();
     child.stderr.write('CST_PIPE_VERIFIED\n');
     const stream = await pending;
     assert.equal(args.includes('-PipeName'), pipeName !== undefined);
@@ -66,6 +66,24 @@ test('transport keeps default local arguments and admits only an exact app-tools
   }
   for (const pipeName of ['other', 'codex-app-tools-invalid', '\\\\.\\pipe\\codex-ipc', 'codex-ipc\n', 'codex-ipc; command']) {
     assert.throws(() => verifiedDesktopTransport(powershellPath, { pipeName, spawnHelper: () => assert.fail('must not spawn') }), /supported Desktop pipe/);
+  }
+});
+
+test('compiled transport uses the same readiness gate and never falls back after a failed verification', async () => {
+  const helper = resolve('Desktop-Pipe.exe');
+  for (const reject of [false, true]) {
+    const child = childFixture(); const calls = [];
+    const pending = verifiedDesktopTransport(powershellPath, { nativeHelperPath: helper,
+      spawnHelper: (exe, args, options) => { calls.push({exe,args,options}); return child; } })();
+    assert.equal(calls[0].exe, helper); assert.deepEqual(calls[0].args, ['--pipe','codex-ipc']);
+    assert.equal(calls[0].options.windowsHide, true);
+    if (reject) {
+      child.exitCode = 1; child.emit('close', 1, null);
+      await assert.rejects(pending, /did not exit cleanly/);
+    } else {
+      child.stderr.write('CST_PIPE_VERIFIED\n'); const stream = await pending; stream.destroy();
+    }
+    assert.equal(calls.length, 1);
   }
 });
 

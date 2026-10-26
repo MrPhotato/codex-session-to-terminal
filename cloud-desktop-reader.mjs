@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { CloudAppToolsClient } from './cloud-app-tools.mjs';
-import { verifiedDesktopTransport } from './cst-transport.mjs';
+import { installedDesktopPipeHelper, verifiedDesktopTransport } from './cst-transport.mjs';
 
 const failure = code => Object.assign(new Error(code), { code });
 const pipePattern = /^codex-app-tools-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -163,6 +163,21 @@ export async function createCloudDesktopReader(options = {}, factories = {}) {
   const lifetime = new AbortController();
   const resolvePipeEndpoint = async () => {
     if (lifetime.signal.aborted) throw failure('CLIENT_CLOSED');
+    const nativeHelper = (factories.findPipeHelper ?? installedDesktopPipeHelper)();
+    if (nativeHelper !== null) {
+      try {
+        if (!isAbsolute(nativeHelper) || /[\0\r\n]/.test(nativeHelper)) throw failure('CLOUD_PIPE_UNAVAILABLE');
+        const result = await (factories.execute ?? execute)(nativeHelper, ['--discover-app-tools'],
+          { windowsHide: true, timeout: 10000, maxBuffer: 16384, signal: lifetime.signal });
+        const value = JSON.parse(result.stdout);
+        if (!value || Object.keys(value).length !== 1 || typeof value.pipeName !== 'string' || !pipePattern.test(value.pipeName) || lifetime.signal.aborted) {
+          throw failure('CLOUD_PIPE_UNAVAILABLE');
+        }
+        // The compiled helper performs enumeration, package and same-user
+        // verification together. A failed check never falls back to another path.
+        return `\\\\.\\pipe\\${value.pipeName}`;
+      } catch { throw failure('CLOUD_PIPE_UNAVAILABLE'); }
+    }
     let result;
     try {
       result = await (factories.execute ?? execute)(options.powershellPath,

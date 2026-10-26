@@ -208,6 +208,24 @@ test('unknown items, images and attachments reject history and live updates', as
   }
 });
 
+test('cloud image inputs become explicit text placeholders without forwarding their location', async () => {
+  const source = await resumeFixture(), p = projection();
+  for (const url of ['https://example.test/private?token=secret', 'data:image/png;base64,PRIVATE', 'file:///C:/private.png']) {
+    const item = { type: 'userMessage', id: 'image-input', content: [{ type: 'text', text: 'Look at this' },
+      { type: 'image', url, detail: 'original' }] };
+    const snapshot = structuredClone(source); snapshot.thread.turns[0].items = [item];
+    const projected = p.projectResponse('thread/read', { thread: snapshot.thread }).thread.turns[0].items[0];
+    assert.equal(projected.content[0].text, 'Look at this');
+    assert.equal(projected.content[1].type, 'text'); assert.match(projected.content[1].text, /ChatGPT/);
+    assert.equal(JSON.stringify(projected).includes(url), false);
+    assert.equal(item.content[1].url, url);
+    assert.deepEqual(p.projectNotification({ method: 'item/started', params: { threadId, turnId: 'native-turn', startedAtMs: 1792490895000, item } }).params.item, projected);
+  }
+  for (const content of [{type:'image',url:12}, {type:'image',url:'x',detail:'unknown'}, {type:'image',url:'x',future:{}}]) {
+    assert.throws(() => p.projectNotification({ method:'item/started',params:{threadId,turnId:'native-turn',startedAtMs:1792490895000,item:{type:'userMessage',id:'bad',content:[content]}} }));
+  }
+});
+
 test('cloud file-change diffs and viewed-image labels pass unchanged as display-only history and live items', async () => {
   const source = await resumeFixture(), p = projection();
   const items = [
@@ -577,7 +595,8 @@ test('removed interrupt options reject before the bridge, namespace probe or any
 test('changed binding, foreign response and unsupported live item fail closed', { timeout: 10000 }, async t => {
   for (const scenario of ['changed', 'foreign', 'item', 'uncorrelated']) {
     await t.test(scenario, async t => {
-      const f = await setup(t); await f.resume();
+      const errors = [];
+      const f = await setup(t, { onError: error => errors.push(error.code) }); await f.resume();
       const closed = once(f.socket, 'close');
       if (scenario === 'changed') f.bridge.state = { ...f.state, id: otherThreadId };
       const upstream = [...f.sockets][0];
@@ -585,6 +604,7 @@ test('changed binding, foreign response and unsupported live item fail closed', 
       if (scenario === 'item') upstream.send(JSON.stringify({ method: 'item/started', params: { threadId, turnId: 'native-turn', item: { id: 'x', type: 'fileChange', changes: [] } } }));
       if (scenario === 'uncorrelated') upstream.send(JSON.stringify({ id: 999999, result: {} }));
       assert.equal((await closed)[0], 1011); assert.equal(f.proxy.records.projectionFailed, true);
+      assert.deepEqual(errors, ['UNSUPPORTED_CLOUD_PROJECTION']);
     });
   }
 });

@@ -13,6 +13,8 @@ function fixture(extra={}) {
   const attachment={endpoint:'ws://127.0.0.1:33333/',token:'a'.repeat(64),state:{id,hostId:'durable',latestThreadSettings:{cwd:'/cloud/not-a-local-directory'}},manifest:{readonly:true,hostId:'durable',send:false,steer:false,queue:false,interrupt:false},close:async()=>calls.push('attachment.close')};
   const reader={listConversations:async()=>({threads:[{id,kind:'codex',hostId:'durable',title:'Online'}]}),readConversation:async(target,args)=>{calls.push({read:target,args});return {thread:{id:target,kind:'codex',hostId:'durable'},turns:[]};},close:async()=>calls.push('reader.close')};
   const dependencies={lease:()=>true,createHome:async()=>home,createReader:async()=>reader,writeDiagnostics:async()=>{},loadIdentityLinks:async()=>[],
+    writeConnectionDiagnostics:async()=>{},
+    createDiagnostics:()=>({update(){},frame(){},async close(){}}),
     chooseThread:async rows=>{calls.push({candidates:rows});return rows.find(row=>row.hostId==='durable').id;},
     createAttachment:async args=>{calls.push({attachment:args});return attachment;},
     createPresence:()=>({updateState(){},updateStatus(){},close:async()=>calls.push('presence.close')}),
@@ -32,6 +34,56 @@ test('missing cloud owner explains the Work/native connection boundary without e
   assert.match(cloudTerminalError({code:'NO_OWNER',message:secret},'zh-CN'), /当前 Work 页面未建立原生 Codex 连接.*Codex 视图.*NO_OWNER/);
   assert.match(cloudTerminalError({code:'NO_OWNER',message:secret},'en-SG'), /Work page has no native Codex connection.*Codex view.*NO_OWNER/);
   for(const code of ['NO_OWNER','REMOTE_ERROR',secret])assert.equal(cloudTerminalError({code,message:secret},'en-US').includes(secret),false);
+});
+
+test('slow discovery and a loading execution view have distinct localized errors without upstream text',()=>{
+  for(const code of ['CLOUD_DISCOVERY_TIMEOUT','CLOUD_OWNER_NOT_READY'])for(const locale of ['en-US','zh-CN']){
+    const text=cloudTerminalError({code,message:'private response'},locale);
+    assert.ok(text.includes(code));assert.equal(text.includes('private response'),false);
+  }
+});
+
+test('a timed-out discovery stops without a misleading picker and saves its reason',async()=>{
+  const f=linkedFixture();f.dependencies.loadIdentityLinks=async()=>[];
+  f.dependencies.discoverCandidate=async(_list,_frontend,_read,{onDiagnostic})=>{
+    onDiagnostic({version:1,outcome:'timeout',candidates:15,scanned:12,elapsedMs:45000});
+    throw Object.assign(new Error('private response'),{code:'CLOUD_DISCOVERY_TIMEOUT'});
+  };
+  const reports=[];f.dependencies.writeConnectionDiagnostics=async(_home,stage,value)=>reports.push({stage,value});
+  await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),{code:'CLOUD_DISCOVERY_TIMEOUT'});
+  assert.equal(reports.length,1);assert.equal(reports[0].stage,'discovery');assert.equal(reports[0].value.outcome,'timeout');
+  assert.equal(f.calls.some(x=>x.attachment||x.launch),false);
+});
+
+test('selection after a long picker wait renews the source by a live page check before recovery',async()=>{
+  for(const samePage of [true,false]){
+    const f=linkedFixture();let time=100010,discoveries=0;
+    f.dependencies.now=()=>time;f.dependencies.loadIdentityLinks=async()=>[];
+    f.dependencies.discoverCandidate=async()=>++discoveries===1?null:{native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId},title:'Online'};
+    f.dependencies.chooseThread=async()=>{time+=60000;return frontendId;};
+    f.dependencies.recheckTitleContext=async(context,{refreshAge})=>{
+      assert.equal(refreshAge,true);assert.equal(context.capturedAt,100000);return samePage;
+    };
+    f.dependencies.attachWithRecovery=async args=>{assert.equal(args.plan.context.capturedAt,160010);return args.connect();};
+    if(samePage)assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
+    else await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),{code:'CLOUD_PAGE_CHANGED'});
+  }
+});
+
+test('recovery diagnostics are saved before viewing or reporting a connection failure',async()=>{
+  for(const fails of [false,true]){
+    const f=fixture(),events=[];
+    f.dependencies.attachWithRecovery=async args=>{
+      args.onDiagnostic({version:1,navigated:true,attempts:[{elapsedMs:20000,result:'no-owner'}],outcome:fails?'owner-not-ready':'connected'});
+      if(fails)throw Object.assign(new Error('private upstream response'),{code:'CLOUD_OWNER_NOT_READY'});
+      return args.connect();
+    };
+    f.dependencies.writeConnectionDiagnostics=async(_home,stage,value)=>{events.push(stage);assert.equal(JSON.stringify(value).includes('private'),false);};
+    f.dependencies.runView=async()=>{assert.deepEqual(events,['recovery']);return 0;};
+    if(fails)await assert.rejects(runCloudTerminal(options,f.dependencies),{code:'CLOUD_OWNER_NOT_READY'});
+    else assert.equal(await runCloudTerminal(options,f.dependencies),0);
+    assert.deepEqual(events,['recovery']);
+  }
 });
 test('catalog retains exact durable identities, deduplicates, and strips terminal controls',()=>{
   const rows=cloudCandidates({pinnedThreads:[{id,kind:'codex',hostId:'durable',title:'\x1b[31mCloud\x1b[0m\r\n'}],threads:[{id,kind:'codex',hostId:'durable',title:'duplicate'}, {id:'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',kind:'chatgpt',hostId:'durable'}, {id:'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee',kind:'codex',hostId:'local'}]});
@@ -57,7 +109,7 @@ test('selection then authoritative durable read precedes readonly attachment and
 });
 test('a mismatched/local read never opens an attachment or CLI',async()=>{
   const f=fixture();f.reader.readConversation=async()=>({thread:{id,kind:'codex',hostId:'local'}});
-  await assert.rejects(runCloudTerminal(options,f.dependencies),{code:'NOT_CLOUD_SESSION'});
+  await assert.rejects(runCloudTerminal({...options,threadId:undefined},f.dependencies),{code:'NOT_CLOUD_SESSION'});
   assert.equal(f.calls.some(x=>x.attachment||x.launch),false);assert.ok(f.calls.includes('reader.close'));
 });
 test('cancellation while attachment opens cleans the late result and cannot start a viewer',async()=>{
@@ -71,7 +123,7 @@ test('cancellation while attachment opens cleans the late result and cannot star
 });
 test('viewer failure revokes attachment and never sends cloud interruption',async()=>{
   const f=fixture({runView:async()=>{throw new Error('display failed');}});
-  await assert.rejects(runCloudTerminal(options,f.dependencies),/display failed/);
+  await assert.rejects(runCloudTerminal({...options,threadId:undefined},f.dependencies),/display failed/);
   assert.deepEqual(f.calls.slice(-3),['attachment.close','reader.close','presence.close']);
   assert.equal(f.dependencies.processEvents.listenerCount('SIGINT'),0);
 });
@@ -83,7 +135,7 @@ test('cancellation waits for viewer cleanup before releasing resources or return
     started();await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));
     await new Promise(resolve=>{finishCleanup=resolve;});f.calls.push('view.cleaned');return 130;
   }});
-  let settled=false;const running=runCloudTerminal(options,f.dependencies).finally(()=>{settled=true;});
+  let settled=false;const running=runCloudTerminal({...options,threadId:undefined},f.dependencies).finally(()=>{settled=true;});
   await entered;controller.abort();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(settled,false);assert.equal(f.calls.includes('attachment.close'),false);
   finishCleanup();await assert.rejects(running,{code:'ABORTED'});
@@ -145,9 +197,9 @@ test('a warm linked session verifies current message identity before display eve
 });
 
 test('a previously linked cloud session accepts current completed/live receipts after Continue',async()=>{
-  for(const status of ['completed','inProgress']) for(const continuation of [false,true]) {
+  for(const status of ['completed','interrupted','inProgress']) for(const continuation of [false,true]) {
     const f=linkedFixture(),state=f.attachment.state,turn=state.turnHistory.history.entitiesByKey.latest;
-    state.historyMode='legacy';state.threadRuntimeStatus={type:status==='completed'?'idle':'active'};
+    state.historyMode='legacy';state.threadRuntimeStatus={type:status==='inProgress'?'active':'idle'};
     turn.turnId='eeeeeeee-3333-4333-8333-333333333333';turn.turnStartedAtMs=1792739849168;
     turn.status=status;turn.params={};delete turn.itemsPagination;
     if(continuation){
@@ -280,7 +332,7 @@ test('explicit or manual selection with no source context never guesses a return
     const f=fixture({createAttachment:async()=>{throw Object.assign(new Error('missing'),{code:'NO_OWNER'});}});
     f.dependencies.createReader=async args=>{reads++;assert.equal(args.navigateTargets,undefined);return f.reader;};
     await assert.rejects(runCloudTerminal(selected,f.dependencies),{code:'NO_OWNER'});
-    assert.equal(reads,1);
+    assert.equal(reads,selected.threadId?0:1);
   }
 });
 
@@ -307,7 +359,7 @@ test('explicit thread and tray menu do not consult window title',async()=>{
 
 test('title diagnostics identify recheck fallback with timings and no session content',async()=>{
   let clock=100000;const snapshots=[];
-  const f=fixture({now:()=>clock,createHome:async()=>{clock+=3;return home;},
+  const f=fixture({now:()=>clock,clock:()=>clock,createHome:async()=>{clock+=3;return home;},
     writeDiagnostics:async(directory,value)=>{assert.equal(directory,home);snapshots.push(structuredClone(value));},
     recheckTitleContext:async(_context,{onDiagnostic})=>{clock+=30;onDiagnostic({reason:'expired',elapsedMs:30,title:'private title',token:'private token'});return false;},
     chooseThread:async()=>{assert.equal(snapshots.length,1,'diagnosis must exist while picker is visible');return id;}});
@@ -365,6 +417,68 @@ test('missing title offers frontend names and manual frontend choice uses the sa
   f.dependencies.discoverCandidate=async()=>({native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'});
   f.dependencies.attachWithRecovery=async args=>{assert.equal(args.plan,undefined);return args.connect();};
   assert.equal(await runCloudTerminal({...options,threadId:undefined},f.dependencies),0);
+});
+
+test('each frontend open discovers afresh and rejects changed native proof before publication',async()=>{
+  let scans=0;
+  for(const mismatch of [false,false,true]) {
+    const f=linkedFixture();f.dependencies.loadIdentityLinks=async()=>[];
+    f.dependencies.discoverCandidate=async()=>{scans++;return {native:f.native,evidence:{frontendId,clientMessageId:linkedMessageId,discovered:true},title:'Online'};};
+    if(mismatch) {
+      f.attachment.state.turnHistory.history.entitiesByKey.latest.items[0].clientId=laterMessageId;
+      f.dependencies.createPresence=()=>({updateState:()=>assert.fail('unverified history published'),updateStatus(){},async close(){}});
+      await assert.rejects(runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),{code:'CLOUD_IDENTITY_UNCONFIRMED'});
+      assert.equal(f.calls.some(call=>call.launch),false);
+    } else assert.equal(await runCloudTerminal({...options,threadId:undefined,titleContext:f.source},f.dependencies),0);
+  }
+  assert.equal(scans,3);
+});
+
+test('exact native links skip the catalog executor and validate durable identity before publication',async()=>{
+  for(const invalid of [null,'id','host','readonly','manifest-host','send']) {
+    const f=fixture({createReader:()=>assert.fail('an exact native ID needs no query executor')});
+    if(invalid==='id')f.attachment.state.id=frontendId;
+    if(invalid==='host')f.attachment.state.hostId='local';
+    if(invalid==='readonly')f.attachment.manifest.readonly=false;
+    if(invalid==='manifest-host')f.attachment.manifest.hostId='local';
+    if(invalid==='send')f.attachment.manifest.send=true;
+    if(invalid) {
+      f.dependencies.createPresence=()=>({updateState:()=>assert.fail('unverified history published'),updateStatus(){},async close(){}});
+      await assert.rejects(runCloudTerminal(options,f.dependencies),{code:['id','host'].includes(invalid)?'NOT_CLOUD_SESSION':'READ_ONLY_REQUIRED'});
+      assert.equal(f.calls.some(call=>call.launch),false);
+      assert.ok(f.calls.includes('attachment.close'));
+    } else assert.equal(await runCloudTerminal(options,f.dependencies),0);
+  }
+});
+
+test('first screen releases reader once without blocking viewing and terminal exit waits for cleanup',async()=>{
+  const f=fixture(),events=[];let finishCleanup,finishView,viewArgs;
+  f.dependencies.createDiagnostics=()=>({update:value=>events.push(value),frame(){},async close(){events.push('diagnostics.closed');}});
+  f.reader.close=()=>{events.push('reader.close');return new Promise(resolve=>{finishCleanup=resolve;});};
+  f.dependencies.runView=(_launch,args)=>{viewArgs=args;return new Promise(resolve=>{finishView=resolve;});};
+  let settled=false;const running=runCloudTerminal({...options,threadId:undefined},f.dependencies).then(()=>{settled=true;});
+  while(!viewArgs)await new Promise(r=>setImmediate(r));
+  assert.equal(events.includes('reader.close'),false);
+  viewArgs.onReady();viewArgs.onReady();await new Promise(r=>setImmediate(r));
+  assert.equal(events.filter(x=>x==='reader.close').length,1);
+  assert.equal(settled,false);assert.equal(f.calls.includes('attachment.close'),false);
+  finishView(0);await new Promise(r=>setImmediate(r));assert.equal(settled,false);
+  finishCleanup();await running;
+  assert.ok(events.some(x=>x.reader==='released'));assert.equal(events.at(-1),'diagnostics.closed');
+});
+
+test('reader cleanup failure is observed without closing an established viewer',async()=>{
+ for(const rejected of [true,false]) {
+  const events=[],f=fixture();
+  f.dependencies.createDiagnostics=()=>({update:value=>events.push(value),frame(){},async close(){}});
+  f.reader.close=async()=>{if(rejected)throw Error('archive unavailable');return {helperMayExist:true,archived:false};};
+  f.dependencies.runView=async(_launch,args)=>{
+    args.onReady();await new Promise(r=>setImmediate(r));
+    assert.equal(f.calls.includes('attachment.close'),false);
+    assert.ok(events.some(x=>x.reader==='cleanup-failed'));return 0;
+  };
+  assert.equal(await runCloudTerminal({...options,threadId:undefined},f.dependencies),0);
+ }
 });
 
 test('a local chat sharing the frontend title cannot trigger automatic cloud discovery', async()=>{

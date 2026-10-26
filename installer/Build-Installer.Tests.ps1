@@ -44,6 +44,11 @@ param([string]$OutputDirectory)
 [void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
 [IO.File]::WriteAllBytes((Join-Path $OutputDirectory 'Desktop-Context.exe'), [byte[]](77,90,0,0))
 '@
+    Write-FixtureFile (Join-Path $fixtureRepo 'Build-Pipe.ps1') @'
+param([string]$OutputDirectory)
+[void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
+[IO.File]::WriteAllBytes((Join-Path $OutputDirectory 'Desktop-Pipe.exe'), [byte[]](77,90,0,0))
+'@
     Write-FixtureFile (Join-Path $fixtureRepo 'auth.json') 'DO-NOT-PACK-test-sentinel'
     Write-FixtureFile (Join-Path $fixtureRepo '.env') 'DO-NOT-PACK-test-sentinel'
     Write-FixtureFile (Join-Path $fixtureRepo 'node_modules\private-state.json') 'DO-NOT-PACK-test-sentinel'
@@ -66,7 +71,7 @@ param([string]$OutputDirectory)
         }
     }
     if (Test-Path -LiteralPath (Join-Path $payload 'node_modules')) { throw 'Developer dependencies were copied.' }
-    foreach ($navigationFile in @('Desktop-Navigation.cs', 'Build-Navigation.ps1', 'bin\Desktop-Navigation.exe', 'Desktop-Context.cs', 'Build-Context.ps1', 'bin\Desktop-Context.exe', 'desktop-title-context.mjs', 'cloud-title-selection.mjs', 'cloud-identity-links.mjs')) {
+    foreach ($navigationFile in @('Desktop-Pipe.cs', 'Build-Pipe.ps1', 'bin\Desktop-Pipe.exe', 'Desktop-Navigation.cs', 'Build-Navigation.ps1', 'bin\Desktop-Navigation.exe', 'Desktop-Context.cs', 'Build-Context.ps1', 'bin\Desktop-Context.exe', 'desktop-title-context.mjs', 'cloud-title-selection.mjs', 'cloud-identity-links.mjs')) {
         if (!$include.Contains($navigationFile) -or !(Test-Path -LiteralPath (Join-Path $payload $navigationFile))) { throw "Native navigation file missing: $navigationFile" }
     }
     if ((Get-Content -LiteralPath (Join-Path $payload 'licenses\INNO-SETUP-LICENSE.txt') -Raw).Trim() -cne 'compiler-license-sentinel') {
@@ -85,7 +90,8 @@ param([string]$OutputDirectory)
     foreach ($cloudFile in @('cst-cloud-terminal.mjs','cloud-owner-activation.mjs','cloud-desktop-reader.mjs','cloud-app-tools.mjs','cloud-native-cli-bridge.mjs','cloud-native-metadata.mjs','cloud-windows-attachment.mjs','cloud-windows-cli-proxy.mjs','cloud-readonly-view.mjs','cloud-readonly-input.mjs','CLOUD-DEVELOPMENT.md','terminal-session-view.mjs','terminal-session-input.mjs','desktop-session-navigation.mjs','desktop-button-action.mjs','Focus-Desktop.ps1')) {
         if (!$include.Contains($cloudFile) -or !(Test-Path -LiteralPath (Join-Path $payload $cloudFile))) { throw "Cloud read-only file missing: $cloudFile" }
     }
-    foreach ($researchFile in @('cloud-interrupt-control.mjs','cloud-interrupt-controller.mjs','cloud-history-refresh.mjs')) {
+    if (!$include.Contains('terminal-diagnostics.mjs') -or !(Test-Path -LiteralPath (Join-Path $payload 'terminal-diagnostics.mjs'))) { throw 'Terminal diagnostics missing.' }
+    foreach ($researchFile in @('cloud-interrupt-control.mjs','cloud-interrupt-controller.mjs','cloud-history-refresh.mjs','cloud-recent-candidates.mjs')) {
         if ($include.Contains($researchFile)) { throw "Experimental cloud control entered the product: $researchFile" }
     }
 
