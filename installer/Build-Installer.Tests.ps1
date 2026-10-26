@@ -44,6 +44,11 @@ param([string]$OutputDirectory)
 [void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
 [IO.File]::WriteAllBytes((Join-Path $OutputDirectory 'Desktop-Context.exe'), [byte[]](77,90,0,0))
 '@
+    Write-FixtureFile (Join-Path $fixtureRepo 'Build-Pipe.ps1') @'
+param([string]$OutputDirectory)
+[void](New-Item -ItemType Directory -Path $OutputDirectory -Force)
+[IO.File]::WriteAllBytes((Join-Path $OutputDirectory 'Desktop-Pipe.exe'), [byte[]](77,90,0,0))
+'@
     Write-FixtureFile (Join-Path $fixtureRepo 'auth.json') 'DO-NOT-PACK-test-sentinel'
     Write-FixtureFile (Join-Path $fixtureRepo '.env') 'DO-NOT-PACK-test-sentinel'
     Write-FixtureFile (Join-Path $fixtureRepo 'node_modules\private-state.json') 'DO-NOT-PACK-test-sentinel'
@@ -66,7 +71,7 @@ param([string]$OutputDirectory)
         }
     }
     if (Test-Path -LiteralPath (Join-Path $payload 'node_modules')) { throw 'Developer dependencies were copied.' }
-    foreach ($navigationFile in @('Desktop-Navigation.cs', 'Build-Navigation.ps1', 'bin\Desktop-Navigation.exe', 'Desktop-Context.cs', 'Build-Context.ps1', 'bin\Desktop-Context.exe', 'desktop-title-context.mjs', 'cloud-title-selection.mjs', 'cloud-identity-links.mjs')) {
+    foreach ($navigationFile in @('Desktop-Pipe.cs', 'Build-Pipe.ps1', 'bin\Desktop-Pipe.exe', 'Desktop-Navigation.cs', 'Build-Navigation.ps1', 'bin\Desktop-Navigation.exe', 'Desktop-Context.cs', 'Build-Context.ps1', 'bin\Desktop-Context.exe', 'desktop-title-context.mjs', 'cloud-title-selection.mjs', 'cloud-identity-links.mjs')) {
         if (!$include.Contains($navigationFile) -or !(Test-Path -LiteralPath (Join-Path $payload $navigationFile))) { throw "Native navigation file missing: $navigationFile" }
     }
     if ((Get-Content -LiteralPath (Join-Path $payload 'licenses\INNO-SETUP-LICENSE.txt') -Raw).Trim() -cne 'compiler-license-sentinel') {

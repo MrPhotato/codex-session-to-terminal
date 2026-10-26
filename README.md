@@ -57,7 +57,7 @@ Codex Session to Terminal 使用 ChatGPT 自带的“复制聊天链接”快捷
 
 两种模式都由终端外层保留顶部一行，下面运行原版 CLI。本地模式保留编辑区，键盘及粘贴内容转交 CLI；鼠标坐标按顶部一行的偏移调整。云端继续使用只读输入过滤。导航使用预先编译的小助手，通过已核对的官方程序转交会话链接，省去 PowerShell 的启动和运行时编译；不启动模型执行器、不读取聊天历史，也不保留常驻导航进程。界面的「已请求打开」表示链接已交付，不代表页面已经加载完成。
 
-安装包包含导航助手和只读标题助手。源码运行可分别执行 `powershell -NoProfile -File .\Build-Navigation.ps1` 和 `powershell -NoProfile -File .\Build-Context.ps1`。未生成导航助手时使用较慢的 PowerShell 兼容路径；未生成标题助手时保留云端选择列表。
+安装包包含导航助手、只读标题助手和连接助手。源码运行可分别执行 `powershell -NoProfile -File .\Build-Navigation.ps1`、`powershell -NoProfile -File .\Build-Context.ps1` 和 `powershell -NoProfile -File .\Build-Pipe.ps1`。连接助手在安装时编译，首次打开终端时无需启动 PowerShell 再临时编译连接代码；仍在实际连接句柄上验证官方安装包、可执行文件路径和 Windows 用户。不新增常驻进程，也不改变 ChatGPT 的启动方式。缺少连接或导航助手时使用 PowerShell 兼容路径；助手存在但校验失败时停止连接。未生成标题助手时保留云端选择列表。
 
 窗口缩放后原地重绘；太小时只显示只读提示，放大后恢复内容。连接依赖 Desktop 的原生执行视图；当前页面已确认而连接尚未建立时，使用上面的临时打开和返回流程，不发送消息。用户上传的云端图片显示「图片：请在 ChatGPT 中查看」占位文字，不下载图片，也不把附件地址交给 CLI。其他暂不支持的附件、媒体和历史格式会明确报错。未列出不表示账号中没有该聊天。手动和自动选择最终均绑定原生云端执行 ID；返回 Desktop 按钮继续打开该执行视图，不把标题匹配当作前端页面 ID 的关联证明。
 
