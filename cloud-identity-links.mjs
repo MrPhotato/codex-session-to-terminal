@@ -213,8 +213,10 @@ export async function discoverCloudCandidate(list, frontend, read, { signal, tim
       }
      }
     };
-    // Share one official reader process; limit outstanding read-only RPCs.
-    await Promise.all(Array.from({ length: Math.min(3, rows.length) }, scan));
+    // Share one official reader process. Eight bounded queries overlap cloud
+    // waits while leaving headroom under the reader's 16-request limit.
+    // Every listed candidate still participates in the uniqueness check.
+    await Promise.all(Array.from({ length: Math.min(8, rows.length) }, scan));
     if (invalid || matches.length !== 1 || controller.signal.aborted) {
       diagnostics.outcome = invalid ? 'invalid-candidate' : matches.length > 1 ? 'ambiguous' : 'no-match'; return null;
     }

@@ -1040,3 +1040,26 @@ composer and first verified content are deliberately separate measurements.
 
 The paired benchmark, limitations and resource checks are recorded in
 [CLOUD-FIRST-OPEN-ACCEPTANCE.md](CLOUD-FIRST-OPEN-ACCEPTANCE.md).
+
+## 2026-10-26: bounded concurrent cloud lookup
+
+Content discovery now overlaps at most eight reads in the same official query
+helper, up from three. Request count, recent/pinned directory scope, all-candidate
+uniqueness checks, fresh frontend re-read and final native receipt validation are
+unchanged. There is no cache, extra query process or speculative connection.
+
+Ten counterbalanced full CLI pairs all displayed the correct title, body and
+read-only banner. Median engine-to-content time was 17.804 s with three reads
+versus 15.767 s with eight. Helper startup also varied substantially; that entire
+difference must not be attributed to concurrency. Four additional pairs excluded
+startup and isolated the candidate reads: median candidate time was 11.599 s
+versus 10.457 s, with eight faster in all four pairs. This supports a modest
+lookup improvement, not a fixed two-second gain for every open.
+
+Expanded checks also reproduced existing limits in both versions: multimodal
+history with different frontend/native representations, extra native-only user
+messages, and an otherwise matching candidate without a Desktop owner. These
+were not converted into successes by weaker matching and remain separate work.
+No page was switched and no chat message was submitted during these tests.
+
+Details and scope are recorded in [CLOUD-LOOKUP-ACCEPTANCE.md](CLOUD-LOOKUP-ACCEPTANCE.md).

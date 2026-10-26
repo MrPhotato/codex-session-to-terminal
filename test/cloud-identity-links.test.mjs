@@ -177,6 +177,75 @@ test('discovery rejects duplicates, failed reads, truncated messages and stale f
   }
 });
 
+for (const mode of ['unique', 'late-duplicate', 'late-failure', 'source-changed']) {
+  test(`bounded concurrent discovery waits for all candidates: ${mode}`, { timeout: 2000 }, async () => {
+    const f = discoveryFixture();
+    const extra = Array.from({ length: 16 }, (_, i) => native({
+      id: `12345678-1234-4234-8234-${String(i + 1).padStart(12, '0')}`,
+    }));
+    const lastId = extra.at(-1).id;
+    let releaseLast, reportLastStarted, active = 0, peak = 0, sourceReads = 0, settled = false;
+    const lastGate = new Promise(resolve => { releaseLast = resolve; });
+    const lastStarted = new Promise(resolve => { reportLastStarted = resolve; });
+    const reads = [];
+    const read = async key => {
+      if (key === frontendId) {
+        const value = structuredClone(f.source);
+        if (++sourceReads === 2 && mode === 'source-changed') value.turns[0].items[0].id = otherId;
+        return value;
+      }
+      reads.push(key); active++; peak = Math.max(peak, active);
+      try {
+        await new Promise(resolve => setImmediate(resolve));
+        if (key === lastId) {
+          reportLastStarted(); await lastGate;
+          if (mode === 'late-failure') throw Object.assign(Error('Rate limited'), { code: 'RATE_LIMITED' });
+        }
+        const value = structuredClone(f.target); value.thread.id = key;
+        if (key !== nativeId && !(key === lastId && mode === 'late-duplicate')) {
+          value.turns[0].items[2].content[0].text = 'Another conversation with a different question';
+        }
+        return value;
+      } finally { active--; }
+    };
+    const running = discoverCloudCandidate(directory(extra), frontend(), read).finally(() => { settled = true; });
+    try {
+      await lastStarted;
+      assert.equal(settled, false, 'the first matching candidate must not bypass a later candidate');
+      assert.equal(peak, 8, 'use the bounded window without opening extra readers');
+      assert.equal(reads.length, 17);
+      assert.equal(new Set(reads).size, 17);
+    } finally { releaseLast(); }
+    const result = await running;
+    assert.equal(result?.native.thread.id ?? null, mode === 'unique' ? nativeId : null);
+    assert.equal(sourceReads, ['unique', 'source-changed'].includes(mode) ? 2 : 1);
+    assert.equal(active, 0);
+  });
+}
+
+test('cancelling a full query window cannot refill it when late reads finish', { timeout: 2000 }, async () => {
+  const f = discoveryFixture(), abort = new AbortController();
+  const extra = Array.from({ length: 16 }, (_, i) => native({
+    id: `12345678-1234-4234-8234-${String(i + 1).padStart(12, '0')}`,
+  }));
+  const pending = []; let sourceReads = 0, windowStarted;
+  const fullWindow = new Promise(resolve => { windowStarted = resolve; });
+  const running = discoverCloudCandidate(directory(extra), frontend(), async key => {
+    if (key === frontendId) { sourceReads++; return f.source; }
+    return new Promise(resolve => {
+      pending.push(() => resolve({ ...f.target, thread: native({ id: key }) }));
+      if (pending.length === 8) windowStarted();
+    });
+  }, { signal: abort.signal });
+  const rejected = assert.rejects(running, { code: 'ABORTED' });
+  await fullWindow;
+  abort.abort(); await rejected;
+  pending.forEach(finish => finish());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(pending.length, 8);
+  assert.equal(sourceReads, 1);
+});
+
 test('discovery is bounded and a late read cannot start scanning further chats', async () => {
   const f = discoveryFixture(); let resolveRead, calls = 0;
   const reports = [];
